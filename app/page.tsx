@@ -1,5 +1,5 @@
 import { Home } from "@/components/home";
-import { readSettingsRecord } from "@/src/server";
+import { readSettingsRecord, stores } from "@/src/server";
 import { resolveSettings, slotsConfigured } from "@/src/core";
 
 // Dynamic: the configured state is server-rendered into the page (the
@@ -16,7 +16,11 @@ export default function HomePage() {
 	// the chains view. Resolved through the one core resolver (missing
 	// section / absent key → factory default on); re-read per navigation.
 	const rendering = resolveSettings(record ?? null).graph.rendering;
+	// The ACTIVE course (PLAN.md Phase 1): Home is keyed on it so a course
+	// switch (router.refresh after PUT /api/workspaces/active) remounts the
+	// graph, chain table and import surfaces against the new course.
+	const workspaceId = stores.workspaceStore.active();
 	return (
-		<Home initialConfigured={slotsConfigured(record?.models)} rendering={rendering} />
+		<Home key={workspaceId} workspaceId={workspaceId} initialConfigured={slotsConfigured(record?.models)} rendering={rendering} />
 	);
 }

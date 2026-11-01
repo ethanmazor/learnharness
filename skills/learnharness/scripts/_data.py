@@ -21,11 +21,17 @@ class DataError(Exception):
     """An actionable reader error, suitable for stderr without a traceback."""
 
 
-def data_root(override: str | None = None) -> Path:
+def data_root(override: str | None = None, workspace: str | None = None) -> Path:
     """Resolve an explicit data directory or the normal desktop location.
 
     Never create a missing directory or try a different installation. For a
     development copy or an app launched with LH_DATA_DIR, pass --data-dir.
+
+    Course workspaces (app 0.5+): when the data folder holds
+    workspaces/index.json, the returned root is ONE course's folder
+    (workspaces/<id>/, which contains chats/ and graph/) — the --workspace
+    ID, or the course the app currently has active. Older data folders
+    (chats/ and graph/ directly inside) are read as before.
     """
     if override is not None:
         root = Path(override).expanduser()
@@ -50,7 +56,37 @@ def data_root(override: str | None = None) -> Path:
             raise DataError(f"Data folder not found: {root}. Use --data-dir for another copy; nothing was created.")
     except (OSError, RuntimeError, ValueError) as exc:
         raise DataError(f"Cannot resolve the data folder: {exc}") from exc
-    return root
+    return workspace_root(root, workspace)
+
+
+def list_workspaces(root: Path) -> list[dict[str, Any]]:
+    """Every course workspace under a workspace-layout data folder (else [])."""
+    folder = root / "workspaces"
+    if not (folder / "index.json").is_file():
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in sorted(folder.iterdir()):
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        meta = read_json(folder, Path(entry.name) / "workspace.json")
+        if isinstance(meta, dict) and meta.get("id") == entry.name and isinstance(meta.get("name"), str):
+            out.append({"id": entry.name, "name": meta["name"], "archived": bool(meta.get("archivedAt"))})
+    return out
+
+
+def workspace_root(root: Path, workspace: str | None = None) -> Path:
+    """Narrow a workspace-layout data folder to one course; legacy roots pass through."""
+    index = read_json(root, Path("workspaces") / "index.json") if (root / "workspaces").is_dir() else None
+    if index is None:
+        if workspace is not None:
+            raise DataError("This data folder has no course workspaces; omit --workspace.")
+        return root
+    chosen = workspace if workspace is not None else (index.get("activeWorkspaceId") if isinstance(index, dict) else None)
+    known = {w["id"]: w for w in list_workspaces(root)}
+    if not isinstance(chosen, str) or chosen not in known:
+        names = ", ".join(f"{w['id']} ({w['name']})" for w in known.values()) or "none"
+        raise DataError(f"Unknown course workspace {chosen!r}. Available: {names}.")
+    return safe_path(root, Path("workspaces") / chosen)
 
 
 def safe_path(root: Path, relative: str | Path) -> Path:
@@ -116,7 +152,8 @@ def read_chat(root: Path, session_id: str) -> dict[str, Any]:
 
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     """Common CLI options precede the subcommand, as shown in SKILL.md."""
-    parser.add_argument("--data-dir", metavar="PATH", help="LearnHarness data root (contains chats/ and/or graph/); default: normal desktop location")
+    parser.add_argument("--data-dir", metavar="PATH", help="LearnHarness data root (contains workspaces/, or chats/ and graph/ in older versions); default: normal desktop location")
+    parser.add_argument("--workspace", metavar="ID", help="Course workspace ID (default: the course active in the app)")
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown", help="Output format (default: markdown)")
 
 

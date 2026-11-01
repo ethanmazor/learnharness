@@ -4,7 +4,7 @@ import { coverageOf } from "../core/coverage.ts";
 import { deleteChatTraces, type ChatDeleteMode, type ChatDeletionStats } from "../core/graph-deletion.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
 import { graphRevision } from "./graph.ts";
-import { stores } from "./stores.ts";
+import { stores, storesForChat } from "./stores.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
 import { clearTurnFailure } from "./turn-runs.ts";
 import { discardChatDeliveries } from "./jobs.ts";
@@ -142,7 +142,9 @@ export function deleteIdleChatRecord(chatId: string): Extract<ChatDeleteOutcome,
 function finishChatDeletion(chatId: string, mode: ChatDeleteMode): Extract<ChatDeleteOutcome, { ok: true }> {
 	// THE SYNC BLOCK — no awaits below (see the doc comment). Order:
 	// ledgers → jobs → the chat record.
-	const stats = deleteChatTraces(stores.graphStore, chatId, mode);
+	const scoped = storesForChat(chatId);
+	if (!scoped) throw new Error(`Chat not found: ${chatId}`);
+	const stats = deleteChatTraces(scoped.graphStore, chatId, mode);
 	const jobsRemoved = finishChatRecordDeletion(chatId);
 	return { ok: true, mode, stats, jobsRemoved, graphRevision: graphRevision() };
 }
@@ -182,8 +184,9 @@ export interface SessionCoverage {
  *  chat doesn't exist — callers own the 404. */
 export function sessionCoverage(chatId: string): SessionCoverage | null {
 	const record = stores.chatStore.getChat(chatId);
-	if (!record) return null;
-	const entries = stores.graphStore.readCoverage();
+	const scoped = storesForChat(chatId);
+	if (!record || !scoped) return null;
+	const entries = scoped.graphStore.readCoverage();
 	// Wave B: the record is native history — coverage reads through the
 	// projection (same view the extraction pipeline folds).
 	const cov = coverageOf(record.messages, entries, chatId);

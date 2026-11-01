@@ -52,6 +52,12 @@ export interface ServerEvents {
 	 *  the chat; the client mirrors it by disabling the composer/dock
 	 *  submit. */
 	"compaction-changed": { chatId: string; running: boolean };
+	/** A course workspace was created, renamed, archived, deleted, or the
+	 *  active course changed (PLAN.md Phase 1). */
+	"workspaces-changed": Record<string, never>;
+	/** The learner layer changed (feedback, traces, profile, bridges) —
+	 *  the "How I learn" panel and the feedback chips refetch. */
+	"learner-changed": { chatId?: string };
 }
 
 export type ServerEventType = keyof ServerEvents;
@@ -69,6 +75,8 @@ export const SERVER_EVENT_TYPES = [
 	"subscriptions-changed",
 	"record-changed",
 	"compaction-changed",
+	"workspaces-changed",
+	"learner-changed",
 ] as const satisfies readonly ServerEventType[];
 
 /** One notification: the type discriminates the payload. */

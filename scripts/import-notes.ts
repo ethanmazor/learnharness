@@ -6,6 +6,8 @@
  *
  *   npx tsx --env-file=.env.local scripts/import-notes.ts <dir> [concurrency]
  *
+ * The notes land in the ACTIVE course workspace, or in LH_WORKSPACE=<id>.
+ *
  * Default dir: real-data-extraction/learn-sessions (the prototype
  * learning-session exports — deliberately NOT imported as chats: they run
  * through the notes path, raw). Runs in this process: the dev server's
@@ -16,7 +18,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createExtractionPipeline } from "../src/agent/subagents/extraction.ts";
 import { getGraph } from "../src/core/graph.ts";
-import { effectiveSettings, stores } from "../src/server/stores.ts";
+import { effectiveSettings, resolveWorkspaceId, workspaceStores } from "../src/server/stores.ts";
 
 async function main() {
 	const dir = process.argv[2] ?? "real-data-extraction/learn-sessions";
@@ -27,6 +29,8 @@ async function main() {
 		.sort();
 	console.log(`[import-notes] ${files.length} note files from ${dir} (concurrency ${limit})`);
 
+	const stores = workspaceStores(resolveWorkspaceId(process.env.LH_WORKSPACE));
+	console.log(`[import-notes] into workspace ${stores.workspaceId}`);
 	const pipeline = createExtractionPipeline({
 		...stores,
 		// Live budget: the graph section's setting, same as the app's trigger

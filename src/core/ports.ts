@@ -31,13 +31,15 @@ import type { UserSettings } from "./settings.ts";
 // ─── ChatStore — the session record's home (data/chats) ─────────────────────
 
 export interface ChatStore {
-	/** Create a session record (persisted immediately). */
-	/** Create a session record; kind "practice" marks a practice session
-	 *  (absent = teach, the default). */
-	createChat(title: string, kind?: "practice"): ChatRecord;
+	/** Create a session record (persisted immediately); kind "practice"
+	 *  marks a practice session (absent = teach, the default). The record
+	 *  lives in `workspaceId` for its whole life (absent = the active
+	 *  workspace). Throws for an unknown or archived workspace. */
+	createChat(title: string, kind?: "practice", workspaceId?: string): ChatRecord;
 	/** The full record, or null if unknown id / corrupt file. */
 	getChat(id: string): ChatRecord | null;
-	/** All sessions, newest activity first (the sidebar's list view). */
+	/** All sessions across every workspace, newest activity first (the
+	 *  sidebar's list view); each summary names its workspace. */
 	listChats(): ChatSummary[];
 	/** Persist the full native message list (the record IS the agent
 	 * state — Wave B, owner-approved 2026-09-26). */
@@ -134,6 +136,62 @@ export interface GraphStore {
 export interface SourceOrganizationStore {
 	read(): import("./source-organization.ts").SourceOrganization;
 	write(state: import("./source-organization.ts").SourceOrganization): void;
+}
+
+// ─── WorkspaceStore — the course workspaces (data/workspaces) ───────────────
+
+/** Course workspaces (PLAN.md Phase 1). Directory-per-workspace; the
+ *  record shapes live in core/contracts/workspace.ts. */
+export interface WorkspaceStore {
+	/** Every workspace, oldest first (General first). */
+	list(): import("./contracts/workspace.ts").WorkspaceRecord[];
+	get(id: string): import("./contracts/workspace.ts").WorkspaceRecord | null;
+	create(name: string): import("./contracts/workspace.ts").WorkspaceRecord;
+	rename(id: string, name: string): import("./contracts/workspace.ts").WorkspaceRecord;
+	setArchived(id: string, archived: boolean): import("./contracts/workspace.ts").WorkspaceRecord;
+	/** Move the workspace directory out of the app's view (to
+	 *  backups/deleted-workspaces/). The caller owns the busy gates. */
+	remove(id: string): void;
+	/** The active workspace id (always an existing, unarchived workspace). */
+	active(): string;
+	setActive(id: string): void;
+	/** The workspace that owns a chat id, or null when no workspace has it. */
+	workspaceOfChat(chatId: string): string | null;
+}
+
+// ─── LearnerStore — the global learner layer (data/learner) ─────────────────
+
+/** The learner layer's append-only revision ledgers (PLAN.md Phases 2–5):
+ *  feedback.jsonl, traces.jsonl, concepts.jsonl, edges.jsonl. Lines are
+ *  revisions/tombstones; the pure folds live in core (contracts/learner.ts
+ *  foldRevisions). The profile is one read-modify-write JSON document. */
+export type LearnerLedger = "feedback" | "traces" | "concepts" | "edges";
+
+export interface LearnerStore {
+	appendLine<T extends { id: string; rev: number }>(ledger: LearnerLedger, line: T): void;
+	/** Raw lines in append order (corrupt/shape-invalid lines skipped). */
+	readLines(ledger: LearnerLedger): Array<{ id: string; rev: number } & Record<string, unknown>>;
+	/** The profile document, or null before the first write. */
+	readProfile(): unknown;
+	writeProfile(profile: unknown): void;
+}
+
+// ─── LearnerGraphStore — the learner's own concept graph (Phase 5) ───────────
+
+/** The learner's concept bridges behind ONE interface (PLAN.md Phase 5), so
+ *  the JSONL adapter can be swapped for a graph database (e.g. Graphiti)
+ *  without touching agents or routes. Queries are pure core functions over
+ *  concepts() / edges() (core/learner-bridges.ts). */
+export interface LearnerGraphStore {
+	concepts(): import("./contracts/learner.ts").LearnerConcept[];
+	upsertConcept(concept: import("./contracts/learner.ts").LearnerConcept): void;
+	/** Live edges; replaced/rejected ones too (callers filter). */
+	edges(): import("./contracts/learner.ts").LearnerEdge[];
+	/** Append a new edge, or a new revision of an existing one. */
+	putEdge(edge: import("./contracts/learner.ts").LearnerEdge): void;
+	/** Mark `oldId` replaced (validUntil + replacedBy) and add `next`. */
+	replaceEdge(oldId: string, next: import("./contracts/learner.ts").LearnerEdge): void;
+	deleteEdge(id: string): void;
 }
 
 // ─── JobStore — background sub-agent jobs (data/jobs) ─────────────────────────

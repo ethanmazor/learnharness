@@ -452,6 +452,19 @@ function projectMarker(marker: LhMarkerMessage, out: LhViewMessage[]): void {
 			});
 			return;
 		}
+		case "learner-feedback":
+		case "learner-context":
+		case "learning-stack": {
+			// The learner layer's markers (PLAN.md Phases 2–4): user-side
+			// compact lines/cards keyed on the structured details; the model
+			// reads the bracketed content.
+			out.push({
+				id: marker.id,
+				role: "user",
+				parts: [{ type: `data-${marker.customType}`, id: `ll_${marker.id}`, data: { ...(marker.details as object), content: marker.content } }],
+			});
+			return;
+		}
 		case "problem-dismissed":
 			// UI-only (the ask-style dismissal): the synthesized conclude
 			// pair — which rides the NEXT input — carries the record's face.

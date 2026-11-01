@@ -36,6 +36,11 @@ import { useFieldCycle } from "@/components/field-cycle";
 import { JobsContext } from "@/components/jobs-context";
 import { StatsBar } from "@/components/stats-bar";
 import { useServerEvent, useServerResync } from "@/components/server-events";
+import { FeedbackBox } from "@/components/feedback-box";
+import { isLearnerMarkerPart, LearnerMarkerLine, type LearnerMarkerData } from "@/components/learner-markers";
+import { StackBreadcrumb } from "@/components/stack-breadcrumb";
+import { foldLearningStack } from "@/src/core";
+import type { FeedbackItem } from "@/src/core";
 import {
 	isProviderKeyRefusal,
 	firstSourceTextParts,
@@ -222,9 +227,13 @@ export function Chat({
 	initiallyCompacting = false,
 	initialConfigured = false,
 	kind = "teach",
+	courseName,
 }: {
 	chatId: string;
 	title: string;
+	/** The course workspace the session lives in (PLAN.md Phase 1) — a
+	 *  quiet label before the title; the session never leaves it. */
+	courseName?: string;
 	initialMessages: LhMessage[];
 	/** Memory-only settlement notice supplied on reopening. */
 	initialError?: string;
@@ -1109,6 +1118,53 @@ export function Chat({
 		firstFetchRef.current = jobStatusRef.current.size === 0;
 		void fetchJobs();
 	}, [fetchJobs]); // identity changes exactly on chatId
+	// PER-RESPONSE FEEDBACK (PLAN.md Phase 2): this chat's items, grouped by
+	// the response they are about; refetched on learner-changed.
+	const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
+	const refreshFeedback = useCallback(() => {
+		void fetch(`/api/learner/feedback?chatId=${encodeURIComponent(chatId)}`, { cache: "no-store" })
+			.then((r) => (r.ok ? r.json() : { feedback: [] }))
+			.then((body: { feedback: FeedbackItem[] }) => setFeedback(body.feedback))
+			.catch(() => { /* keep the last snapshot */ });
+	}, [chatId]);
+	useEffect(() => refreshFeedback(), [refreshFeedback]);
+	useServerEvent("learner-changed", (p) => {
+		if (!p.chatId || p.chatId === chatId) refreshFeedback();
+	});
+	const feedbackByMessage = useMemo(() => {
+		const map = new Map<string, FeedbackItem[]>();
+		for (const item of feedback) map.set(item.messageId, [...(map.get(item.messageId) ?? []), item]);
+		return map;
+	}, [feedback]);
+	/** Phase 4: a "lost me" item becomes a learning-stack push. */
+	const pushLostToStack = useCallback((item: FeedbackItem) => {
+		window.dispatchEvent(new CustomEvent("lh:stack-push", { detail: { chatId, label: item.quote?.text ?? item.text ?? "", statement: item.text ?? "", origin: { kind: "feedback", ref: item.id } } }));
+	}, [chatId]);
+
+	// THE LEARNING STACK (PLAN.md Phase 4): derived from the record; the
+	// learner's push / jump / close are stack input events, each a turn.
+	const learningStack = useMemo(() => foldLearningStack(nativeMessages), [nativeMessages]);
+	const [stackNotice, setStackNotice] = useState<string | null>(null);
+	const stackBlocked = busy || !!pending || compacting;
+	const sendStack = useCallback((input: { action: "push"; label: string; statement?: string; origin?: { kind: "chip" | "feedback"; ref?: string } } | { action: "jump" | "close"; frameId: string }) => {
+		if (stackBlocked) {
+			setStackNotice(pending ? "Answer or dismiss the open question first." : "Wait for the current turn to finish.");
+			return;
+		}
+		setStackNotice(null);
+		void send({ type: "stack", ...input });
+	}, [stackBlocked, pending, send]);
+	useEffect(() => {
+		const onPush = (e: Event) => {
+			const detail = (e as CustomEvent<{ chatId?: string; label: string; statement?: string; origin?: { kind: "chip" | "feedback"; ref?: string } }>).detail;
+			if (detail.chatId && detail.chatId !== chatId) return;
+			if (!detail.label?.trim()) return;
+			sendStack({ action: "push", label: detail.label, statement: detail.statement, origin: detail.origin });
+		};
+		window.addEventListener("lh:stack-push", onPush);
+		return () => window.removeEventListener("lh:stack-push", onPush);
+	}, [chatId, sendStack]);
+
 	useServerEvent("jobs-changed", (p) => {
 		if (p.chatId != null && p.chatId !== chatId) return; // ours or unattributed
 		if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current);
@@ -1331,6 +1387,11 @@ export function Chat({
 						</>
 					) : (
 					<>
+						{courseName && (
+							<span data-testid="chat-course" className="shrink-0 font-ui text-xs font-medium uppercase tracking-wide text-muted-foreground">
+								{courseName}
+							</span>
+						)}
 						<Hint
 							// F2 renames (registry) — surfaced on the hover.
 							label="Rename session"
@@ -1461,6 +1522,10 @@ export function Chat({
 													</div>
 												);
 											default:
+												// The learner layer's markers (PLAN.md Phases 2–4).
+												if (isLearnerMarkerPart(part.type)) {
+													return <LearnerMarkerLine key={pi} type={part.type} data={part.data as LearnerMarkerData} />;
+												}
 												return null;
 										}
 									})}
@@ -1522,7 +1587,7 @@ export function Chat({
 												</div>
 											</div>
 									) : (
-									<Message from="assistant" className="max-w-full">
+									<Message from="assistant" className="max-w-full" data-response-id={m.id}>
 									<MessageContent className="w-full">
 											{m.parts.map((part, pi) => {
 												const isLastPart = mi === messages.length - 1 && pi === m.parts.length - 1;
@@ -1626,6 +1691,18 @@ export function Chat({
 												}
 											})}
 										</MessageContent>
+										{/* PER-RESPONSE FEEDBACK (PLAN.md Phase 2): never on the
+										    response still streaming in. */}
+										{!(busy && mi === messages.length - 1) && (
+											<FeedbackBox
+												chatId={chatId}
+												messageId={m.id}
+												messageIds={[...new Set(m.parts.map((p) => p.sourceMessageId ?? textPartMessageId(p.id)).filter((id): id is string => typeof id === "string"))]}
+												items={feedbackByMessage.get(m.id) ?? []}
+												onChanged={refreshFeedback}
+												onPushToStack={pushLostToStack}
+											/>
+										)}
 									</Message>
 									)}
 								</Fragment>
@@ -1716,7 +1793,15 @@ export function Chat({
 					dictationCancel={dictation.cancel}
 					queuedSteers={visibleQueuedSteers(steerQueue, nativeMessages)}
 					setupCta={
-						zeroKeys ? (
+						<>
+						<StackBreadcrumb
+							frames={learningStack.frames}
+							disabled={stackBlocked}
+							notice={stackNotice}
+							onJump={(frameId) => sendStack({ action: "jump", frameId })}
+							onClose={(frameId) => sendStack({ action: "close", frameId })}
+						/>
+						{zeroKeys ? (
 							<ZeroKeysPill onOpen={() => setSetupOpen(true)} />
 						) : (
 							!configured && (
@@ -1731,7 +1816,8 @@ export function Chat({
 									</button>
 								</div>
 							)
-						)
+						)}
+						</>
 					}
 					composer={
 						<ChatSessionComposer

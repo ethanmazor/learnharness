@@ -76,7 +76,13 @@ export interface LhMarkerMessage {
 		| "practice-thinking"
 		| "practice-next"
 		| "problem-dismissed"
-		| "compaction";
+		| "compaction"
+		/** The learner's feedback on an earlier response (PLAN.md Phase 2). */
+		| "learner-feedback"
+		/** The learner-profile summary handed to the agent (Phase 3). */
+		| "learner-context"
+		/** A learning-stack push / pop / jump (Phase 4). */
+		| "learning-stack";
 	/** The model-facing text ("" for plan blocks — UI-only). */
 	content: string;
 	display: boolean;
@@ -323,6 +329,61 @@ export function newThinkingMessage(problemCallId: string, text: string): LhMarke
 		details: { problemCallId, text },
 		timestamp: Date.now(),
 	};
+}
+
+/** The learner's feedback on an earlier response (PLAN.md Phase 2): the
+ *  model reads the bracketed summary; `details` keeps the feedback id and
+ *  the target response for the transcript's compact line. */
+export function newLearnerFeedbackMessage(feedbackId: string, messageId: string, content: string): LhMarkerMessage {
+	return {
+		id: newMessageId(),
+		role: "custom",
+		customType: "learner-feedback",
+		content,
+		display: true,
+		details: { feedbackId, messageId },
+		timestamp: Date.now(),
+	};
+}
+
+/** The learner-profile summary for this session (PLAN.md Phase 3): the
+ *  model reads the bracketed block; `details.fingerprint` identifies the
+ *  active-trait set it was built from (a refresh only on change). */
+export function newLearnerContextMessage(content: string, fingerprint: string): LhMarkerMessage {
+	return {
+		id: newMessageId(),
+		role: "custom",
+		customType: "learner-context",
+		content,
+		display: true,
+		details: { fingerprint },
+		timestamp: Date.now(),
+	};
+}
+
+/** The fingerprint of the session's latest learner-context marker. */
+export function lastLearnerContextFingerprint(messages: readonly LhMessage[]): string | null {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i]!;
+		if (m.role === "custom" && m.customType === "learner-context") {
+			const fp = (m.details as { fingerprint?: unknown } | null)?.fingerprint;
+			return typeof fp === "string" ? fp : null;
+		}
+	}
+	return null;
+}
+
+/** Feedback ids already delivered to this chat (derived from its markers —
+ *  never tracked separately). */
+export function deliveredFeedbackIds(messages: readonly LhMessage[]): Set<string> {
+	const ids = new Set<string>();
+	for (const m of messages) {
+		if (m.role === "custom" && m.customType === "learner-feedback") {
+			const id = (m.details as { feedbackId?: unknown } | null)?.feedbackId;
+			if (typeof id === "string") ids.add(id);
+		}
+	}
+	return ids;
 }
 
 /** The learner's explicit move-on signal (owner round 16): appended by
@@ -847,7 +908,11 @@ export function nativeInputCause(message: AgentMessage, history: readonly AgentM
 	if (message.role === "custom") {
 		if (["probe-handoff", "subagent-steer", "subagent-abort"].includes(message.customType)) return "automatic";
 		if (["practice-thinking", "practice-next"].includes(message.customType)) return "learner";
-		return ["graph-context", "plan-block", "problem-dismissed", "compaction"].includes(message.customType) ? "neutral" : "unrecognizable";
+		// A learner-initiated learning-stack change (push/jump/close) starts
+		// its own turn: learner-caused. Feedback and the profile summary ride
+		// along with other inputs: neutral.
+		if (message.customType === "learning-stack") return "learner";
+		return ["graph-context", "plan-block", "problem-dismissed", "compaction", "learner-feedback", "learner-context"].includes(message.customType) ? "neutral" : "unrecognizable";
 	}
 	if (message.role === "toolResult") {
 		if (message.isError && (message.details as { questionRecovery?: unknown } | null)?.questionRecovery === true) {

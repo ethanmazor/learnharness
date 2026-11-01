@@ -47,6 +47,7 @@ export async function startDraftSession(
 	picks?: readonly DraftPick[],
 	starter = new SessionStarter(),
 	settingsIdentity?: string,
+	workspaceId?: string,
 ): Promise<string | null> {
 	const t = text.trim();
 	if (!t) return null;
@@ -54,10 +55,11 @@ export async function startDraftSession(
 	// from the pick bar creates its session WITH the graph context — the
 	// same contract as the home screen's practice send (the marker with
 	// [id] name: statement lines, target validation's truth set).
+	const course = workspaceId ? { workspaceId } : {};
 	return starter.start(
 		mode === "practice"
-			? { title: t, kind: "practice", ...(picks && picks.length > 0 ? { graphContext: { propositions: picks } } : {}) }
-			: { title: t },
+			? { title: t, kind: "practice", ...(picks && picks.length > 0 ? { graphContext: { propositions: picks } } : {}), ...course }
+			: { title: t, ...course },
 		fetchLike,
 		settingsIdentity,
 	);
@@ -229,7 +231,13 @@ export function DraftShell({
 	);
 }
 
-export function NewSession({ initialConfigured, mode = "teach" }: { initialConfigured: boolean; mode?: "teach" | "practice" }) {
+export function NewSession({ initialConfigured, mode = "teach", workspaceId }: {
+	initialConfigured: boolean;
+	mode?: "teach" | "practice";
+	/** The course the draft creates its session in (?workspace=); absent =
+	 *  the active course. Also scopes the pick bar's graph. */
+	workspaceId?: string;
+}) {
 	const router = useRouter();
 	const [text, setText] = useState("");
 	/* The draft MIRROR ("nothing gets lost" round, 2026-10-01): the shell's
@@ -261,7 +269,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 			setPickerOpen(true);
 			return;
 		}
-		void fetch("/api/graph")
+		void fetch(workspaceId ? `/api/graph?workspace=${encodeURIComponent(workspaceId)}` : "/api/graph")
 			.then((r) => r.json() as Promise<GraphSnapshot>)
 			.then((snap) => {
 				setSnapshot(snap);
@@ -306,7 +314,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 		setBusy(true);
 		setStartError(false);
 		void startDraftSession(draft, fetch, mode === "practice" ? "practice" : undefined, mode === "practice" ? picksRef.current : undefined,
-			starterRef.current, JSON.stringify(catalog?.slots.strong))
+			starterRef.current, JSON.stringify(catalog?.slots.strong), workspaceId)
 			.then((target) => {
 				if (target) router.push(target);
 				else { startingRef.current = false; setBusy(false); }
@@ -316,7 +324,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 				setBusy(false);
 				setStartError(true);
 			});
-	}, [router, configured, zeroKeys, catalog, mode]);
+	}, [router, configured, zeroKeys, catalog, mode, workspaceId]);
 
 	return (
 		<>

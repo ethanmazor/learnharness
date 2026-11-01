@@ -86,6 +86,9 @@ const nextConfig: NextConfig = {
 			// Pi-compatible image resizing runs in an unbundled worker. Photon
 			// loads its colocated WASM through Node, also in packaged Electron.
 			"src/agent/image-processing/*.mjs",
+			// Every prompt segment (incl. the tracer's own directory and the
+			// learner-layer fragments) is read from disk at request time.
+			"src/agent/prompts/**/*.md",
 			"src/agent/image-processing/LICENSE",
 			"node_modules/@silvia-odwyer/photon-node/**/*",
 			// Wave E stage 2: resvg rasterizes visual-maker SVGs natively; same

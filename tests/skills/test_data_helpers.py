@@ -164,6 +164,39 @@ class DataHelpersTest(unittest.TestCase):
         self.assertIn("∇", out.getvalue())
         self.assertEqual(json.loads(out.getvalue()), {"statement": "∇ and café"})
 
+    def workspace_layout(self):
+        """A course-workspace data folder: General (active) + one course."""
+        for wid, name in (("general", "General"), ("ws_la", "Linear Algebra")):
+            folder = self.root / "workspaces" / wid
+            (folder / "chats").mkdir(parents=True)
+            (folder / "workspace.json").write_text(json.dumps({"version": 1, "id": wid, "name": name, "createdAt": "2026-11-01T00:00:00Z"}), encoding="utf-8")
+        (self.root / "workspaces" / "index.json").write_text(json.dumps({"version": 1, "activeWorkspaceId": "ws_la"}), encoding="utf-8")
+
+    def test_workspace_layout_resolves_the_active_course(self):
+        self.workspace_layout()
+        self.assertEqual(_data.data_root(str(self.root)), (self.root / "workspaces" / "ws_la").resolve())
+
+    def test_workspace_flag_selects_another_course(self):
+        self.workspace_layout()
+        self.assertEqual(_data.data_root(str(self.root), "general"), (self.root / "workspaces" / "general").resolve())
+
+    def test_unknown_workspace_lists_the_available_courses(self):
+        self.workspace_layout()
+        with self.assertRaisesRegex(_data.DataError, "general \\(General\\), ws_la \\(Linear Algebra\\)"):
+            _data.data_root(str(self.root), "../auth")
+
+    def test_legacy_layout_ignores_no_flag_and_refuses_one(self):
+        self.save_chat()
+        self.assertEqual(_data.data_root(str(self.root)), self.root.resolve())
+        with self.assertRaisesRegex(_data.DataError, "no course workspaces"):
+            _data.data_root(str(self.root), "general")
+
+    def test_workspace_listing_skips_staging_and_invalid_folders(self):
+        self.workspace_layout()
+        (self.root / "workspaces" / ".staging-general").mkdir()
+        (self.root / "workspaces" / "broken").mkdir()
+        self.assertEqual([w["id"] for w in _data.list_workspaces(self.root)], ["general", "ws_la"])
+
 
 if __name__ == "__main__":
     unittest.main()

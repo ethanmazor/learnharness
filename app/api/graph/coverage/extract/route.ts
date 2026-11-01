@@ -10,7 +10,7 @@
  * flight (the dock is the source of truth for that); failures are logged
  * by the pipeline and leave coverage untouched — the button stays honest.
  */
-import { extraction, extractionStatuses } from "@/src/server";
+import { extractionFor, extractionStatuses, stores } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +30,10 @@ export async function POST(request: Request) {
 	}
 	// Fire-and-forget, like the trigger: the dock + the coverage panel's
 	// running flags track progress; the promise never blocks the response.
-	void extraction.runExtraction(chatId).catch((err: unknown) => {
+	// The chat's own course (D1) — never the UI's active one.
+	const workspaceId = stores.workspaceStore.workspaceOfChat(chatId);
+	if (!workspaceId) return Response.json({ error: "Unknown chat" }, { status: 404 });
+	void extractionFor(workspaceId).runExtraction(chatId).catch((err: unknown) => {
 		console.error(`[chat ${chatId}] manual extraction failed:`, err);
 	});
 	return Response.json({ started: true }, { status: 202 });

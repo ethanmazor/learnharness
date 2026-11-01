@@ -1,4 +1,4 @@
-import { graphView } from "@/src/server";
+import { graphView, workspaceErrorResponse, workspaceFromRequest } from "@/src/server";
 
 /**
  * The home graph view's data endpoint (W4; vision §1 "Home page") — thin
@@ -8,6 +8,10 @@ import { graphView } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-	return Response.json(graphView());
+export async function GET(request: Request) {
+	try {
+		return Response.json(graphView(workspaceFromRequest(request)));
+	} catch (error) {
+		return workspaceErrorResponse(error);
+	}
 }

@@ -21,15 +21,15 @@ import { before, describe, it } from "node:test";
 
 process.env.LH_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "lh-pos-commit-"));
 
-let commitPositions: (input: unknown) => Record<string, { x: number; y: number }>;
+let commitPositions: (workspaceId: string, input: unknown) => Record<string, { x: number; y: number }>;
 let readPositions: () => Record<string, { x: number; y: number }>;
 let appendNode: (node: unknown) => void;
 let appendChain: (assertion: unknown) => void;
 
 before(async () => {
 	({ commitPositions } = await import("../src/server/commit-positions.ts"));
-	const { stores } = await import("../src/server/stores.ts");
-	const positionsFile = path.join(process.env.LH_DATA_DIR!, "graph", "positions.json");
+	const stores = (await import("../src/server/stores.ts")).workspaceStores("general");
+	const positionsFile = path.join(process.env.LH_DATA_DIR!, "workspaces", "general", "graph", "positions.json");
 	readPositions = () => JSON.parse(fs.readFileSync(positionsFile, "utf8")).positions as Record<string, { x: number; y: number }>;
 	appendNode = stores.graphStore.appendNode as (node: unknown) => void;
 	appendChain = stores.graphStore.appendChain as (assertion: unknown) => void;
@@ -58,7 +58,7 @@ before(async () => {
 
 describe("commitPositions (the arg_ fix)", () => {
 	it("persists arg_ implication ids alongside propositions — the canvas's whole world", () => {
-		const persisted = commitPositions({
+		const persisted = commitPositions("general", {
 			n_a: { x: 10, y: 20 },
 			n_b: { x: 30, y: 40 },
 			n_c: { x: 50, y: 60 },
@@ -71,7 +71,7 @@ describe("commitPositions (the arg_ fix)", () => {
 	});
 
 	it("a payload covering the whole view runs NO settle — the file equals the payload exactly", () => {
-		commitPositions({
+		commitPositions("general", {
 			n_a: { x: 100, y: 200 },
 			n_b: { x: 300, y: 400 },
 			n_c: { x: 500, y: 600 },
@@ -87,7 +87,7 @@ describe("commitPositions (the arg_ fix)", () => {
 
 	it("a payload missing a view node (a merge landed mid-drag) triggers the absorbing settle", () => {
 		// The client never knew arg_chain1 (it merged after the drag began).
-		commitPositions({
+		commitPositions("general", {
 			n_a: { x: 1, y: 2 },
 			n_b: { x: 3, y: 4 },
 			n_c: { x: 5, y: 6 },
@@ -99,7 +99,7 @@ describe("commitPositions (the arg_ fix)", () => {
 	});
 
 	it("garbage still sanitizes: non-finite drops, absurd clamps, nothing throws", () => {
-		const persisted = commitPositions({
+		const persisted = commitPositions("general", {
 			n_a: { x: Number.NaN, y: 1 },
 			n_b: { x: 5, y: Number.POSITIVE_INFINITY },
 			n_c: { x: 1e9, y: 0 },

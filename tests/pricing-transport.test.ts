@@ -19,7 +19,7 @@ test("chat GET supplies derived Pi costs without persisting dollars or changing 
 	for (const [id, model] of [["api", "openrouter:openai/gpt-6.1-sol"], ["plan", "chatgpt:fixture"], ["unknown", "missing:fixture"]]) {
 		chatStore.appendTurnUsage(record.id, { id: id!, model: model!, messageId: "fixture-input", at: "fixture", steps: [step] });
 	}
-	const file = path.join(scratch, "chats", `${record.id}.json`);
+	const file = path.join(scratch, "workspaces", "general", "chats", `${record.id}.json`);
 	const before = fs.readFileSync(file, "utf8");
 	const response = await GET(new Request(`http://localhost/api/chats/${record.id}`), { params: Promise.resolve({ id: record.id }) });
 	assert.equal(response.status, 200);

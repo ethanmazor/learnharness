@@ -22,11 +22,12 @@ import type {
 	GeneralSettings,
 	DictationSettings,
 	GraphSettings,
+	LearnerSettings,
 	ModelsSettings,
 	ModelSlot,
 	RoleModelOverride,
 } from "../core/settings.ts";
-import { BACKGROUND_MODEL_ROLES, CACHE_RETENTIONS, COMPACTION_THRESHOLD_FLOOR, CUSTOM_MODEL_PIN_FLOOR, EXTRACTION_CHUNK_TOKENS_FLOOR, MODEL_SLOTS } from "../core/settings.ts";
+import { BACKGROUND_MODEL_ROLES, CACHE_RETENTIONS, COMPACTION_THRESHOLD_FLOOR, CUSTOM_MODEL_PIN_FLOOR, EXTRACTION_CHUNK_TOKENS_FLOOR, LEARNER_LIMITS, MODEL_SLOTS, sanitizeLearner } from "../core/settings.ts";
 import { WRITABLE_TOOL_KEYS } from "../core/pending.ts";
 import { isDictationLanguage } from "../core/dictation.ts";
 
@@ -446,6 +447,24 @@ export function parseCustomModelOverridesBody(
 
 /** The section→parser map for PUT /api/settings/[section]. The custom endpoint
  *  is NOT a section — it connects via POST /api/custom-provider. */
+/** learner (PLAN.md Phases 2–5): strict types on the write side — booleans
+ *  for the switches, finite numbers inside LEARNER_LIMITS for the knobs. */
+export function parseLearnerSettingsBody(body: unknown): SettingsBodyResult<LearnerSettings> {
+	const raw = asRecord(body);
+	if (!raw) return { ok: false, error: "Invalid JSON body" };
+	for (const key of ["enabled", "traceExtraction"] as const) {
+		if (raw[key] !== undefined && typeof raw[key] !== "boolean") return { ok: false, error: `${key} must be a boolean` };
+	}
+	for (const [key, [min, max]] of Object.entries(LEARNER_LIMITS)) {
+		const value = raw[key];
+		if (value === undefined) continue;
+		if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+			return { ok: false, error: `${key} must be a number from ${min} to ${max}` };
+		}
+	}
+	return { ok: true, settings: sanitizeLearner(raw) };
+}
+
 export const SETTINGS_SECTIONS = {
 	general: parseGeneralSettingsBody,
 	chat: parseSettingsBody,
@@ -456,6 +475,7 @@ export const SETTINGS_SECTIONS = {
 	models: parseModelsSettingsBody,
 	dictation: parseDictationSettingsBody,
 	claudeCode: parseClaudeCodeSettingsBody,
+	learner: parseLearnerSettingsBody,
 } as const;
 
 export type SettingsSectionName = keyof typeof SETTINGS_SECTIONS;

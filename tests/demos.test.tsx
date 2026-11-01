@@ -96,7 +96,7 @@ process.env.OPENROUTER_API_KEY ??= "test-key-presence-gate";
 
 
 
-const JOBS_DIR = path.join(PATHS.data, "jobs");
+const JOBS_DIR = path.join(PATHS.data, "workspaces", "general", "jobs");
 const createdChats: string[] = [];
 const createdJobs: string[] = [];
 

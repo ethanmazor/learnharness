@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { stores } from "./stores.ts";
+import { workspaceStores } from "./stores.ts";
 import type { ChatStore, GraphStore, SourceOrganizationStore } from "../core/ports.ts";
 import { getGraph } from "../core/graph.ts";
 import { sourceFileLabel } from "../core/source-label.ts";
@@ -69,7 +69,10 @@ export function createSourceDirectory(deps: { chatStore: ChatStore; graphStore: 
 	return { read, change, registerImport };
 }
 
-export const sourceDirectory = createSourceDirectory(stores);
+/** The source directory of one course workspace (its chats + imports). */
+export function sourceDirectoryFor(workspaceId: string) {
+	return createSourceDirectory(workspaceStores(workspaceId));
+}
 
 /** Bound actual JSON bytes as well as declared size; never buffer an unbounded
  * operation body. A cancelled tee must not delay the refusal. */

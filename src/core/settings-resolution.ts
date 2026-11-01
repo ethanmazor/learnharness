@@ -40,6 +40,7 @@ import {
 	type CustomModel,
 	type CustomModelOverride,
 	type GraphSettings,
+	type LearnerSettings,
 	type ModelSlot,
 	type ModelSlotName,
 	type RoleModelOverride,
@@ -98,6 +99,8 @@ export interface EffectiveSettings {
 	/** Compaction (owner round 14): resolved concrete — absent record
 	 *  section resolves to the factory 150k. */
 	compaction: Required<CompactionSettings>;
+	/** The learner model (PLAN.md Phases 2–5), resolved concrete. */
+	learner: Required<LearnerSettings>;
 	/** Custom endpoint, resolved concrete: baseUrl defaults "", models and
 	 *  user pins default to empty. */
 	customProvider: { baseUrl: string; models: CustomModel[]; overrides: Record<string, CustomModelOverride>; manualModels: string[] };
@@ -230,6 +233,7 @@ export function resolveSettings(record: UserSettings | null): EffectiveSettings 
 		compaction: {
 			thresholdTokens: record?.compaction?.thresholdTokens ?? FACTORY_SETTINGS.compaction.thresholdTokens,
 		},
+		learner: { ...FACTORY_SETTINGS.learner, ...(record?.learner ?? {}) },
 		customProvider: {
 			baseUrl: record?.customProvider?.baseUrl ?? "",
 			models: record?.customProvider?.models ?? [],

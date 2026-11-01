@@ -44,6 +44,7 @@ import {
 	pendingProblemDismissalOf,
 } from "./native-messages.ts";
 import { QUESTION_TOOLS, toolQuestionKind } from "./pending.ts";
+import { newStackMarker } from "./learning-stack.ts";
 
 /** One client-originated input event (the POST body's `input`). */
 export type ChatInput =
@@ -63,7 +64,19 @@ export type ChatInput =
 	 *  explicit go-ahead during the between-problems pause — the Next
 	 *  chip or Enter on an empty composer. Practice sessions only, and
 	 *  only with nothing active (mid-problem input rides the dock). */
-	| { type: "next" };
+	| { type: "next" }
+	/** A learning-stack action (PLAN.md Phase 4): push an assumption the
+	 *  learner lacks ("I don't get this" on a chip, or a "lost me"
+	 *  feedback item), jump back to a level, or close the top level. Each
+	 *  starts a turn so the agent teaches / resumes at once. */
+	| {
+			type: "stack";
+			action: "push" | "jump" | "close";
+			label?: string;
+			statement?: string;
+			origin?: { kind: "chip" | "feedback" | "agent" | "manual"; ref?: string };
+			frameId?: string;
+	  };
 
 /** A wake-pipeline steer delivery — same turn composition, server-origin.
  *  Wave C (2026-09-26): the idle wake carries EVERY queued marker as its
@@ -195,6 +208,23 @@ export function parseChatInput(input: unknown): ChatInput {
 				throw new ChatInputError("thinking input requires non-empty text");
 			}
 			return { type: "thinking", problemCallId: i.problemCallId, text: i.text };
+		case "stack": {
+			if (i.action !== "push" && i.action !== "jump" && i.action !== "close") throw new ChatInputError("stack input requires action push | jump | close");
+			if (i.action === "push" && (typeof i.label !== "string" || i.label.trim() === "")) throw new ChatInputError("stack push requires a label");
+			if (i.action !== "push" && (typeof i.frameId !== "string" || i.frameId === "")) throw new ChatInputError(`stack ${i.action} requires frameId`);
+			const origin = i.origin as { kind?: unknown; ref?: unknown } | undefined;
+			const kinds = ["chip", "feedback", "agent", "manual"];
+			return {
+				type: "stack",
+				action: i.action,
+				...(typeof i.label === "string" ? { label: i.label } : {}),
+				...(typeof i.statement === "string" ? { statement: i.statement } : {}),
+				...(origin && typeof origin.kind === "string" && kinds.includes(origin.kind)
+					? { origin: { kind: origin.kind as "chip" | "feedback" | "agent" | "manual", ...(typeof origin.ref === "string" ? { ref: origin.ref } : {}) } }
+					: {}),
+				...(typeof i.frameId === "string" ? { frameId: i.frameId } : {}),
+			};
+		}
 		case "next":
 			return { type: "next" };
 		default:
@@ -212,10 +242,27 @@ export function parseChatInput(input: unknown): ChatInput {
  * double-answering.
  */
 export function inputAppends(
-	record: { messages: LhMessage[]; kind?: string },
+	record: { messages: LhMessage[]; kind?: string; stackMaxDepth?: number },
 	input: ChatInput,
 ): LhMessage[] {
 	switch (input.type) {
+		case "stack": {
+			// Never between a question call and its answer: the learner answers
+			// or dismisses first (the client disables the controls meanwhile).
+			if (danglingQuestionOf(record.messages)) throw new ChatInputError("Answer or dismiss the open question first.");
+			try {
+				const marker = newStackMarker(
+					record.messages,
+					input.action === "push"
+						? { action: "push", label: input.label ?? "", statement: input.statement, origin: input.origin }
+						: { action: input.action, frameId: input.frameId ?? "" },
+					record.stackMaxDepth ?? 4,
+				);
+				return [...dismissalConclusion(record), marker];
+			} catch (err) {
+				throw new ChatInputError((err as Error).message);
+			}
+		}
 		case "text":
 			return [...dismissalConclusion(record), newUserMessage(input.text)];
 		case "answer": {

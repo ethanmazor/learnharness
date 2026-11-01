@@ -8,8 +8,13 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "lh-source-deletion-"));
 process.env.LH_DATA_DIR = root; process.env.LH_AUTH_FILE = path.join(root, "auth.json");
 fs.writeFileSync(process.env.LH_AUTH_FILE, "{}\n");
 const { DELETE } = await import("../app/api/graph/sources/route.ts");
-const { stores } = await import("../src/server/stores.ts");
-const { sourceDirectory } = await import("../src/server/source-organization.ts");
+const { workspaceStores } = await import("../src/server/stores.ts");
+const { sourceDirectoryFor } = await import("../src/server/source-organization.ts");
+// The routing chat/job stores are shared objects (a test's monkeypatch must
+// reach the server); the graph family is the General workspace's.
+const { stores: globalStores } = await import("../src/server/stores.ts");
+const stores = { ...workspaceStores("general"), chatStore: globalStores.chatStore, jobStore: globalStores.jobStore };
+const sourceDirectory = sourceDirectoryFor("general");
 const { SOURCE_ORGANIZATION_FILE } = await import("../config.ts");
 const { beginTurn, endTurn } = await import("../src/server/turn-liveness.ts");
 const { sessionCoverage } = await import("../src/server/chats.ts");

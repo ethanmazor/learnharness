@@ -49,6 +49,7 @@ export const BACKGROUND_MODEL_ROLES = [
 	"visualMaker",
 	"extractor",
 	"auditor",
+	"tracer",
 ] as const;
 
 export type BackgroundModelRole = (typeof BACKGROUND_MODEL_ROLES)[number];
@@ -324,6 +325,7 @@ export const ROLE_SLOT: Readonly<Record<ModelRole, ModelSlotName>> = {
 	demoBuilder: "cheap",
 	extractor: "cheap",
 	auditor: "cheap",
+	tracer: "cheap",
 	visualMaker: "vision",
 	pdfReader: "vision",
 };
@@ -461,6 +463,40 @@ export interface CompactionSettings {
 	thresholdTokens?: number;
 }
 
+/**
+ * THE LEARNER MODEL (PLAN.md Phases 2–5): how the app learns the learner's
+ * reasoning style. Every knob clamps to a sane range (clamp-never-reject).
+ */
+export interface LearnerSettings {
+	/** Master switch: trace extraction, profile updates and the learner-
+	 *  context marker. Feedback and manual edits keep working when off. */
+	enabled?: boolean;
+	/** The reasoning-trace extractor (a cheap-slot call per learner input). */
+	traceExtraction?: boolean;
+	/** An inferred trait turns ACTIVE after this many separate sessions. */
+	activationSessions?: number;
+	/** Evidence weight of explicit feedback (inferred evidence weighs 1). */
+	feedbackWeight?: number;
+	/** Token budget of the learner-context summary handed to agents. */
+	contextTokenBudget?: number;
+	/** Recent feedback items included in that summary. */
+	recentFeedbackItems?: number;
+	/** Maximum learning-stack depth below the original problem. */
+	stackMaxDepth?: number;
+	/** Bridge search depth (hops) in the learner's concept graph. */
+	bridgeHops?: number;
+}
+
+/** [min, max] per numeric learner knob (the sanitizer clamps into these). */
+export const LEARNER_LIMITS = {
+	activationSessions: [1, 20],
+	feedbackWeight: [1, 10],
+	contextTokenBudget: [100, 4000],
+	recentFeedbackItems: [0, 20],
+	stackMaxDepth: [1, 8],
+	bridgeHops: [1, 4],
+} as const satisfies Record<string, readonly [number, number]>;
+
 /** THE record. Every section optional (delta); unknown top-level keys are
  *  preserved verbatim by the sanitizer (forward-compat with newer records). */
 export interface UserSettings {
@@ -477,6 +513,7 @@ export interface UserSettings {
 	appearance?: AppearanceSettings;
 	graph?: GraphSettings;
 	compaction?: CompactionSettings;
+	learner?: LearnerSettings;
 	[key: string]: unknown;
 }
 
@@ -503,6 +540,7 @@ export interface FactorySettings {
 	};
 	graph: Required<GraphSettings>;
 	compaction: Required<CompactionSettings>;
+	learner: Required<LearnerSettings>;
 }
 
 export const FACTORY_SETTINGS: FactorySettings = {
@@ -519,6 +557,16 @@ export const FACTORY_SETTINGS: FactorySettings = {
 	},
 	graph: { enabled: true, rendering: true, extractionChunkTokens: 4096 },
 	compaction: { thresholdTokens: 150_000 },
+	learner: {
+		enabled: true,
+		traceExtraction: true,
+		activationSessions: 3,
+		feedbackWeight: 3,
+		contextTokenBudget: 600,
+		recentFeedbackItems: 5,
+		stackMaxDepth: 4,
+		bridgeHops: 2,
+	},
 };
 
 /** The chunk budget's validated floor (GraphSettings.extractionChunkTokens
@@ -782,6 +830,20 @@ function sanitizeGraph(raw: Record<string, unknown>): GraphSettings {
  *  reject-with-rationale (the graph chunk-budget precedent). */
 export const COMPACTION_THRESHOLD_FLOOR = 32_000;
 
+/** The learner section: booleans or drop; numbers floor and clamp into
+ *  LEARNER_LIMITS; anything else drops to the factory default. */
+export function sanitizeLearner(raw: Record<string, unknown>): LearnerSettings {
+	const out: LearnerSettings = {};
+	for (const key of ["enabled", "traceExtraction"] as const) {
+		if (typeof raw[key] === "boolean") out[key] = raw[key] as boolean;
+	}
+	for (const [key, [min, max]] of Object.entries(LEARNER_LIMITS) as [keyof typeof LEARNER_LIMITS, readonly [number, number]][]) {
+		const value = raw[key];
+		if (typeof value === "number" && Number.isFinite(value)) out[key] = Math.min(max, Math.max(min, Math.floor(value)));
+	}
+	return out;
+}
+
 function sanitizeCompaction(raw: Record<string, unknown>): CompactionSettings {
 	const out: CompactionSettings = {};
 	const rawTokens = raw.thresholdTokens;
@@ -837,6 +899,9 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 		if (r.compaction !== undefined && r.compaction !== null && typeof r.compaction === "object") {
 			out.compaction = sanitizeCompaction(r.compaction as Record<string, unknown>);
 		}
+	}
+	if (r.learner !== null && typeof r.learner === "object" && !Array.isArray(r.learner)) {
+		out.learner = sanitizeLearner(r.learner as Record<string, unknown>);
 	}
 	// Unknown top-level keys ride along untouched (forward-compat). One
 	// known-DEAD key is stripped instead of riding: `chat` (the old

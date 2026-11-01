@@ -258,6 +258,9 @@ export interface PlanBlockData {
  */
 export interface ChatSummary {
 	id: string;
+	/** The course workspace the chat lives in (its directory — never a
+	 *  stored field; the routing store attaches it at list time). */
+	workspaceId: string;
 	title: string;
 	createdAt: string;
 	updatedAt: string;

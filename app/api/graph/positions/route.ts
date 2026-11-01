@@ -9,7 +9,7 @@
  *   PUT → 200 {positions: {...}} with whatever survived sanitizing
  *         (empty object = nothing written).
  */
-import { commitPositions } from "@/src/server";
+import { commitPositions, workspaceErrorResponse, workspaceFromRequest } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
@@ -20,5 +20,9 @@ export async function PUT(request: Request) {
 	} catch {
 		return Response.json({ error: "invalid JSON body" }, { status: 400 });
 	}
-	return Response.json({ positions: commitPositions(body) });
+	try {
+		return Response.json({ positions: commitPositions(workspaceFromRequest(request), body) });
+	} catch (error) {
+		return workspaceErrorResponse(error);
+	}
 }

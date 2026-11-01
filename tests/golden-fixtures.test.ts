@@ -14,7 +14,11 @@
  *      appears in real data here (a new marker without a fixture update
  *      fails this suite);
  *   5. reads are READ-ONLY: after everything above, the copy is
- *      byte-identical to the fixture source.
+ *      byte-identical to the fixture source — moved by the one-time
+ *      WORKSPACE MIGRATION (PLAN.md Phase 1): this fixture keeps the
+ *      pre-workspace layout on purpose (real older data), so the first store
+ *      access moves chats/graph/jobs into workspaces/general/ after a
+ *      verified backup. Every original byte must survive in BOTH places.
  *
  * THE FIXTURE LAW: an intentional format change updates the fixtures in the
  * same commit; an unintentional one fails here.
@@ -188,7 +192,7 @@ test("graph: render-settings sanitize and positions parse", () => {
 	assert.ok(raw, "render-settings.json reads");
 	const clean = sanitizeRenderSettings(raw);
 	assert.ok(clean.nodeSize > 0 && typeof clean.labelZoom === "number", "sanitizes to concrete knobs");
-	const positionsFile = JSON.parse(fs.readFileSync(path.join(TMP, "graph", "positions.json"), "utf8")) as {
+	const positionsFile = JSON.parse(fs.readFileSync(path.join(TMP, "workspaces", "general", "graph", "positions.json"), "utf8")) as {
 		positions: Record<string, unknown>;
 	};
 	assert.ok(Object.keys(positionsFile.positions).length >= 300, "positions parse");
@@ -221,11 +225,25 @@ test("settings: the stamped record parses", () => {
 
 // ── read-only: readers never write ──────────────────────────────────────────
 
-test("read-only: after every read above, the data dir is byte-identical to the fixture source", () => {
+test("read-only + migration: every fixture byte survives in workspaces/general AND the backup; reads write nothing else", () => {
 	const after = snapshotTree(TMP);
-	assert.deepEqual([...after.keys()].sort(), [...BEFORE.keys()].sort(), "no files added or removed");
-	for (const [name, buf] of after) {
-		assert.ok(BEFORE.has(name), `${name} existed before`);
-		assert.deepEqual(buf, BEFORE.get(name), `${name} unchanged by reads`);
+	const backups = [...after.keys()].filter((k) => k.startsWith("backups/pre-workspaces-"));
+	const backupRoot = backups[0]?.split("/").slice(0, 2).join("/");
+	assert.ok(backupRoot, "the migration left a backup");
+	const legacy = (name: string) => /^(chats|graph|jobs)\//.test(name);
+	const expected = new Set<string>(["workspaces/index.json", "workspaces/general/workspace.json"]);
+	for (const [name, buf] of BEFORE) {
+		if (legacy(name)) {
+			assert.ok(!after.has(name), `${name} moved out of the legacy location`);
+			for (const moved of [`workspaces/general/${name}`, `${backupRoot}/${name}`]) {
+				assert.deepEqual(after.get(moved), buf, `${moved} is byte-identical to the fixture's ${name}`);
+				expected.add(moved);
+			}
+		} else {
+			assert.deepEqual(after.get(name), buf, `${name} unchanged by reads`);
+			expected.add(name);
+		}
 	}
+	// Empty workspace subdirectories (imports/) hold no files; nothing else appears.
+	assert.deepEqual([...after.keys()].sort(), [...expected].sort(), "no other files added or removed");
 });

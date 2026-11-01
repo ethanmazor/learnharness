@@ -34,7 +34,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { LEDGER_FILES, POSITIONS_FILE, SOURCES_FILE } from "../../config.ts";
+import { GENERAL_WORKSPACE_ID, workspacePaths, type WorkspacePaths } from "../../config.ts";
 import { assertGraphFormat, ensureGraphFormat } from "./graph-format.ts";
 import type {
 	GraphChain,
@@ -50,9 +50,9 @@ import type { GraphStore } from "../core/ports.ts";
 
 // ─── JSONL primitives ────────────────────────────────────────────────────────
 
-function appendLine<T>(file: string, record: T): void {
+function appendLine<T>(file: string, record: T, formatFile: string): void {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
-	ensureGraphFormat(); // the lazy format stamp (graph-format.ts)
+	ensureGraphFormat(formatFile); // the lazy format stamp (graph-format.ts)
 	fs.appendFileSync(file, `${JSON.stringify(record)}\n`, "utf-8");
 }
 
@@ -84,8 +84,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 const isString = (v: unknown): v is string => typeof v === "string";
 
 /** Strict shape guards — anything not matching a W4 ledger shape is skipped. */
-function readValid<T>(file: string, isValid: (v: unknown) => v is T): T[] {
-	assertGraphFormat(); // honest refusal on a newer-stamped data dir
+function readValid<T>(file: string, isValid: (v: unknown) => v is T, formatFile: string): T[] {
+	assertGraphFormat(formatFile); // honest refusal on a newer-stamped data dir
 	return readRawLines(file).filter(isValid);
 }
 
@@ -128,132 +128,147 @@ const isCoverageEntry = (v: unknown): v is CoverageEntry =>
 
 // ─── the port implementation ────────────────────────────────────────────────
 
-export const graphStore: GraphStore = {
-	appendNode(node: GraphNode): void {
-		appendLine(LEDGER_FILES.nodes, node);
-	},
-	/** Raw node lines in append order. A node id may appear on more than
-	 *  one line (a later session's LINK-append: phrasings + provenance); the
-	 *  derivation (core/graph.ts getGraph) merges lines by id. */
-	readNodes(): GraphNode[] {
-		return readValid(LEDGER_FILES.nodes, isGraphNode);
-	},
+/** One workspace's graph store (PLAN.md Phase 1): every ledger path comes
+ *  from that workspace's directory. The store layer caches one instance
+ *  per workspace (src/store/workspaces.ts graphStoreFor). */
+export function createGraphStore(paths: WorkspacePaths): GraphStore {
+	const LEDGER_FILES = paths.ledgers;
+	const SOURCES_FILE = paths.sources;
+	const FORMAT = paths.graphFormat;
+	purgeRetiredLedgers(paths.graph);
+	const readSourceMap = () => readSourceMapAt(SOURCES_FILE, FORMAT);
+	const writeSourceMap = (map: Record<string, NotesSource>) => writeSourceMapAt(SOURCES_FILE, FORMAT, map);
+	return {
+		appendNode(node: GraphNode): void {
+			appendLine(LEDGER_FILES.nodes, node, FORMAT);
+		},
+		/** Raw node lines in append order. A node id may appear on more than
+		 *  one line (a later session's LINK-append: phrasings + provenance); the
+		 *  derivation (core/graph.ts getGraph) merges lines by id. */
+		readNodes(): GraphNode[] {
+			return readValid(LEDGER_FILES.nodes, isGraphNode, FORMAT);
+		},
 
-	/** Append one chain ASSERTION; readers merge lines by (premises,
-	 *  conclusion). */
-	appendChain(assertion: GraphChain): void {
-		appendLine(LEDGER_FILES.chains, assertion);
-	},
-	readChains(): GraphChain[] {
-		return readValid(LEDGER_FILES.chains, isGraphChain);
-	},
+		/** Append one chain ASSERTION; readers merge lines by (premises,
+		 *  conclusion). */
+		appendChain(assertion: GraphChain): void {
+			appendLine(LEDGER_FILES.chains, assertion, FORMAT);
+		},
+		readChains(): GraphChain[] {
+			return readValid(LEDGER_FILES.chains, isGraphChain, FORMAT);
+		},
 
-	appendCheckpoint(checkpoint: SessionCheckpoint): void {
-		appendLine(LEDGER_FILES.sessions, checkpoint);
-	},
-	readCheckpoints(): SessionCheckpoint[] {
-		return readValid(LEDGER_FILES.sessions, isCheckpoint);
-	},
+		appendCheckpoint(checkpoint: SessionCheckpoint): void {
+			appendLine(LEDGER_FILES.sessions, checkpoint, FORMAT);
+		},
+		readCheckpoints(): SessionCheckpoint[] {
+			return readValid(LEDGER_FILES.sessions, isCheckpoint, FORMAT);
+		},
 
-	appendCoverage(entry: CoverageEntry): void {
-		appendLine(LEDGER_FILES.coverage, entry);
-	},
-	readCoverage(): CoverageEntry[] {
-		return readValid(LEDGER_FILES.coverage, isCoverageEntry);
-	},
+		appendCoverage(entry: CoverageEntry): void {
+			appendLine(LEDGER_FILES.coverage, entry, FORMAT);
+		},
+		readCoverage(): CoverageEntry[] {
+			return readValid(LEDGER_FILES.coverage, isCoverageEntry, FORMAT);
+		},
 
-	// ── imported-notes bookkeeping (config.SOURCES_FILE — a JSON map) ──
+		// ── imported-notes bookkeeping (config.SOURCES_FILE — a JSON map) ──
 
-	/** Upsert: keeps the existing record's usage log when re-importing. */
-	upsertSource(source: NotesSource): void {
-		const all = readSourceMap();
-		const prev = all[source.id];
-		all[source.id] = prev ? { ...source, extractions: prev.extractions } : source;
-		writeSourceMap(all);
-	},
-	readSources(): NotesSource[] {
-		return Object.values(readSourceMap());
-	},
-	deleteSources(ids: ReadonlySet<string>): number {
-		if (ids.size === 0) return 0;
-		const all = readSourceMap();
-		let removed = 0;
-		for (const id of ids) if (Object.hasOwn(all, id)) { delete all[id]; removed++; }
-		if (removed === 0) return 0;
-		const tmp = `${SOURCES_FILE}.tmp-${crypto.randomUUID()}`;
-		try {
-			fs.writeFileSync(tmp, JSON.stringify(all, null, "\t"), "utf-8");
-			fs.renameSync(tmp, SOURCES_FILE);
-		} finally {
-			if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
-		}
-		return removed;
-	},
-	/** Idempotent per startedAt — same discipline as chats.appendExtractionUsage. */
-	appendSourceUsage(id: string, entry: ExtractionRunUsage): void {
-		const all = readSourceMap();
-		const source = all[id];
-		if (!source) return; // no such source — nothing to bill against
-		source.extractions = source.extractions?.some((r) => r.startedAt === entry.startedAt)
-			? source.extractions
-			: [...(source.extractions ?? []), entry];
-		writeSourceMap(all);
-	},
-
-	// ── the layout ledger (config.POSITIONS_FILE — a JSON map) ──
-	readPositions(): Record<string, Position> {
-		return readPositionMap();
-	},
-	writePositions(positions: Record<string, Position>): void {
-		writePositionMap(positions);
-	},
-
-	/** THE DESTRUCTIVE SEAM (wave 6 session deletion): atomic full-content
-	 *  replacement per provided ledger — write a uniquely-named temp file
-	 *  beside the ledger, then rename over it (POSIX-atomic: a crash mid-
-	 *  write leaves the original ledger and an orphan .tmp-*, never a torn
-	 *  ledger). Empty arrays write an empty file — a purged ledger reads
-	 *  as "nothing yet", same as never-emitted. */
-	rewriteLedgers(next: {
-		nodes?: GraphNode[];
-		chains?: GraphChain[];
-		coverage?: CoverageEntry[];
-		checkpoints?: SessionCheckpoint[];
-	}): void {
-		const files = {
-			nodes: LEDGER_FILES.nodes,
-			chains: LEDGER_FILES.chains,
-			coverage: LEDGER_FILES.coverage,
-			checkpoints: LEDGER_FILES.sessions,
-		} as const;
-		for (const [key, records] of Object.entries(next) as [keyof typeof files, unknown[]][]) {
-			const file = files[key];
-			fs.mkdirSync(path.dirname(file), { recursive: true });
-			const tmp = `${file}.tmp-${crypto.randomUUID().slice(0, 8)}`;
+		/** Upsert: keeps the existing record's usage log when re-importing. */
+		upsertSource(source: NotesSource): void {
+			const all = readSourceMap();
+			const prev = all[source.id];
+			all[source.id] = prev ? { ...source, extractions: prev.extractions } : source;
+			writeSourceMap(all);
+		},
+		readSources(): NotesSource[] {
+			return Object.values(readSourceMap());
+		},
+		deleteSources(ids: ReadonlySet<string>): number {
+			if (ids.size === 0) return 0;
+			const all = readSourceMap();
+			let removed = 0;
+			for (const id of ids) if (Object.hasOwn(all, id)) { delete all[id]; removed++; }
+			if (removed === 0) return 0;
+			const tmp = `${SOURCES_FILE}.tmp-${crypto.randomUUID()}`;
 			try {
-				// JSONL: one record per line, trailing newline — a reader
-				// must see exactly what appendLine would have written.
-				const body = records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "");
-				fs.writeFileSync(tmp, body, "utf-8");
-				fs.renameSync(tmp, file);
-			} catch (err) {
-				try {
-					fs.unlinkSync(tmp);
-				} catch {
-					/* the rename either already happened or the tmp never existed */
-				}
-				throw err;
+				fs.writeFileSync(tmp, JSON.stringify(all, null, "\t"), "utf-8");
+				fs.renameSync(tmp, SOURCES_FILE);
+			} finally {
+				if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
 			}
-		}
-	},
-};
+			return removed;
+		},
+		/** Idempotent per startedAt — same discipline as chats.appendExtractionUsage. */
+		appendSourceUsage(id: string, entry: ExtractionRunUsage): void {
+			const all = readSourceMap();
+			const source = all[id];
+			if (!source) return; // no such source — nothing to bill against
+			source.extractions = source.extractions?.some((r) => r.startedAt === entry.startedAt)
+				? source.extractions
+				: [...(source.extractions ?? []), entry];
+			writeSourceMap(all);
+		},
+
+		// ── the layout ledger (config.POSITIONS_FILE — a JSON map) ──
+		readPositions(): Record<string, Position> {
+			return readPositionMap(paths.positions);
+		},
+		writePositions(positions: Record<string, Position>): void {
+			writePositionMap(paths.positions, positions);
+		},
+
+		/** THE DESTRUCTIVE SEAM (wave 6 session deletion): atomic full-content
+		 *  replacement per provided ledger — write a uniquely-named temp file
+		 *  beside the ledger, then rename over it (POSIX-atomic: a crash mid-
+		 *  write leaves the original ledger and an orphan .tmp-*, never a torn
+		 *  ledger). Empty arrays write an empty file — a purged ledger reads
+		 *  as "nothing yet", same as never-emitted. */
+		rewriteLedgers(next: {
+			nodes?: GraphNode[];
+			chains?: GraphChain[];
+			coverage?: CoverageEntry[];
+			checkpoints?: SessionCheckpoint[];
+		}): void {
+			const files = {
+				nodes: LEDGER_FILES.nodes,
+				chains: LEDGER_FILES.chains,
+				coverage: LEDGER_FILES.coverage,
+				checkpoints: LEDGER_FILES.sessions,
+			} as const;
+			for (const [key, records] of Object.entries(next) as [keyof typeof files, unknown[]][]) {
+				const file = files[key];
+				fs.mkdirSync(path.dirname(file), { recursive: true });
+				const tmp = `${file}.tmp-${crypto.randomUUID().slice(0, 8)}`;
+				try {
+					// JSONL: one record per line, trailing newline — a reader
+					// must see exactly what appendLine would have written.
+					const body = records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "");
+					fs.writeFileSync(tmp, body, "utf-8");
+					fs.renameSync(tmp, file);
+				} catch (err) {
+					try {
+						fs.unlinkSync(tmp);
+					} catch {
+						/* the rename either already happened or the tmp never existed */
+					}
+					throw err;
+				}
+			}
+		},
+	};
+}
+
+/** The GENERAL workspace's graph store — tests and scripts only; the app
+ *  resolves graphStoreFor(workspaceId) through the store layer. */
+export const graphStore: GraphStore = createGraphStore(workspacePaths(GENERAL_WORKSPACE_ID));
 
 /** positions.json — { positions, updatedAt }. Read-modify-write, NOT
  *  append-only: the settle is a full-graph computation, so it replaces the
  *  whole map. The updatedAt stamp exists for future live-physics conflict
  *  handling (a browser commit must be able to detect "the graph changed
  *  underneath me"); reads just return the map. */
-function readPositionMap(): Record<string, Position> {
+function readPositionMap(POSITIONS_FILE: string): Record<string, Position> {
 	let raw: string;
 	try {
 		raw = fs.readFileSync(POSITIONS_FILE, "utf-8");
@@ -273,7 +288,7 @@ function readPositionMap(): Record<string, Position> {
 	}
 }
 
-function writePositionMap(positions: Record<string, Position>): void {
+function writePositionMap(POSITIONS_FILE: string, positions: Record<string, Position>): void {
 	fs.mkdirSync(path.dirname(POSITIONS_FILE), { recursive: true });
 	// Tmp + rename — the same crash-safety rewriteLedgers uses two blocks
 	// up (a9339b3 UI flag): a torn write must never replace the ledger
@@ -297,8 +312,8 @@ const isPosition = (v: unknown): v is Position =>
 
 /** sources.json — { id: NotesSource }. Read-modify-write, NOT append-only:
  *  the usage log lives inside the record (like a chat's JSON file). */
-function readSourceMap(): Record<string, NotesSource> {
-	assertGraphFormat(); // honest refusal on a newer-stamped data dir
+function readSourceMapAt(SOURCES_FILE: string, formatFile: string): Record<string, NotesSource> {
+	assertGraphFormat(formatFile); // honest refusal on a newer-stamped data dir
 	let raw: string;
 	try {
 		raw = fs.readFileSync(SOURCES_FILE, "utf-8");
@@ -318,17 +333,16 @@ function readSourceMap(): Record<string, NotesSource> {
 	}
 }
 
-function writeSourceMap(map: Record<string, NotesSource>): void {
+function writeSourceMapAt(SOURCES_FILE: string, formatFile: string, map: Record<string, NotesSource>): void {
 	fs.mkdirSync(path.dirname(SOURCES_FILE), { recursive: true });
-	ensureGraphFormat(); // the lazy format stamp (graph-format.ts)
+	ensureGraphFormat(formatFile); // the lazy format stamp (graph-format.ts)
 	fs.writeFileSync(SOURCES_FILE, JSON.stringify(map, null, "\t"), "utf-8");
 }
 
-// ─── one-way purges at adapter load: dead ledgers are exactly the confusion
-// the cleanup removes (owner doctrine — nothing reads them, nothing writes
-// them, a stale file lying around is a lie). ────────────────────────────────
-{
-	const graphDir = path.dirname(LEDGER_FILES.nodes);
+// ─── one-way purges when a workspace's store is first built: dead ledgers
+// are exactly the confusion the cleanup removes (owner doctrine — nothing
+// reads them, nothing writes them, a stale file lying around is a lie). ─────
+function purgeRetiredLedgers(graphDir: string): void {
 	for (const legacy of ["edges.jsonl", "events.jsonl"]) {
 		const file = path.join(graphDir, legacy);
 		try {

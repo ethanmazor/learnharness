@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { assumptionsTool, myBridgesTool, stackTools } from "./tools/learner.ts";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { invalidInputResult, questionResult, serverExecute } from "./tool-execute.ts";
 import {
@@ -276,6 +277,9 @@ export interface ProberToolContext extends ProbeDoneContext {
 	 *  master switch AND the agent.graphTools toggle (settings-resolution).
 	 *  Absent = the gate is closed, no map tools (tests drive this seam). */
 	graphStore?: GraphStore;
+	/** The learner's concept-bridge lookup (PLAN.md Phase 5); present =
+	 *  my_bridges is registered. */
+	bridges?: (concept: string) => string;
 }
 
 /** The prober's tool set: probe quiz (no nodeId) + ask + the learner-fs
@@ -339,6 +343,7 @@ export function createProberTools(
 				...(ctx.graphStore
 					? proberGraphTools({ chatStore: ctx.chatStore, graphStore: ctx.graphStore })
 					: {}),
+				...(ctx.bridges ? { my_bridges: myBridgesTool(ctx.bridges) } : {}),
 				...done,
 			},
 				withoutMechanics(enabled),
@@ -400,6 +405,10 @@ export interface TeacherToolContext extends PlanToolContext {
 	spawn: (job: JobRecord, input: ResearchInput | DemoInput | VisualInput | PdfInput) => void;
 	/** Retained search-status seam; research dispatch is available keylessly. */
 	searchAvailable?: () => boolean;
+	/** The learning-stack depth limit (PLAN.md Phase 4; settings, fresh). */
+	stackMaxDepth?: () => number;
+	/** The learner's concept-bridge lookup (PLAN.md Phase 5). */
+	bridges?: (concept: string) => string;
 }
 
 /**
@@ -459,6 +468,11 @@ export function createTeacherTools(
 			grep: grepTool,
 			...planTools(ctx),
 			...jobTools({ chatId: ctx.chatId, jobStore: ctx.jobStore, spawn: ctx.spawn, searchAvailable: ctx.searchAvailable }),
+			// The learner layer (PLAN.md Phase 4): explicit assumptions + the
+			// learning stack's agent side.
+			assumptions: assumptionsTool(),
+			...stackTools({ chatId: ctx.chatId, chatStore: ctx.chatStore, maxDepth: ctx.stackMaxDepth ?? (() => 4) }),
+			...(ctx.bridges ? { my_bridges: myBridgesTool(ctx.bridges) } : {}),
 		},
 		withoutMechanics(enabled),
 		),

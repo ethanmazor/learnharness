@@ -35,36 +35,36 @@ test.after(() => {
 test("chats: createChat stamps version 1 on disk", () => {
 	const r = chatStore.createChat("stamp test");
 	assert.equal(r.version, 1, "the in-memory twin is stamped");
-	const onDisk = JSON.parse(fs.readFileSync(path.join(TMP_DATA, "chats", `${r.id}.json`), "utf8"));
+	const onDisk = JSON.parse(fs.readFileSync(path.join(TMP_DATA, "workspaces", "general", "chats", `${r.id}.json`), "utf8"));
 	assert.equal(onDisk.version, 1, "the record carries the stamp");
 });
 
 test("chats: an UNSTAMPED legacy record reads fine (absence = v1) and is stamped by its next write", () => {
 	const id = "chat_legacy000_stamp0";
-	fs.mkdirSync(path.join(TMP_DATA, "chats"), { recursive: true });
+	fs.mkdirSync(path.join(TMP_DATA, "workspaces", "general", "chats"), { recursive: true });
 	fs.writeFileSync(
-		path.join(TMP_DATA, "chats", `${id}.json`),
+		path.join(TMP_DATA, "workspaces", "general", "chats", `${id}.json`),
 		JSON.stringify({ id, title: "legacy", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [] }),
 		"utf-8",
 	);
 	const r = chatStore.getChat(id);
 	assert.ok(r, "unstamped record reads (lazy v1)");
 	chatStore.saveMessages(id, []);
-	const onDisk = JSON.parse(fs.readFileSync(path.join(TMP_DATA, "chats", `${id}.json`), "utf8"));
+	const onDisk = JSON.parse(fs.readFileSync(path.join(TMP_DATA, "workspaces", "general", "chats", `${id}.json`), "utf8"));
 	assert.equal(onDisk.version, 1, "the write choke point stamped it");
 });
 
 test("chats: a NEWER-stamped record is refused honestly (the downgrade scenario)", () => {
 	const id = "chat_future000_stamp0";
 	fs.writeFileSync(
-		path.join(TMP_DATA, "chats", `${id}.json`),
+		path.join(TMP_DATA, "workspaces", "general", "chats", `${id}.json`),
 		JSON.stringify({ id, title: "from the future", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [], version: 99 }),
 		"utf-8",
 	);
 	assert.equal(chatStore.getChat(id), null, "getChat refuses: reads as absent, never misparsed");
 	assert.ok(!chatStore.listChats().some((s) => s.id === id), "listChats skips it too");
 	// and the refused record is NOT rewritten or downgraded by the visit:
-	const onDisk = JSON.parse(fs.readFileSync(path.join(TMP_DATA, "chats", `${id}.json`), "utf8"));
+	const onDisk = JSON.parse(fs.readFileSync(path.join(TMP_DATA, "workspaces", "general", "chats", `${id}.json`), "utf8"));
 	assert.equal(onDisk.version, 99, "the future record survives untouched");
 });
 

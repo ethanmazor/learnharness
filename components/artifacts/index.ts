@@ -6,6 +6,7 @@ import { VisualCard } from "@/components/artifacts/visual-card";
 import { ProbeDoneCard } from "@/components/artifacts/probe-done-card";
 import { ToolCallCard } from "@/components/artifacts/tool-call-card";
 import { ProblemCard, ConcludeCard } from "@/components/practice-cards";
+import { AssumptionChips, StackToolLine } from "@/components/artifacts/assumption-chips";
 
 /**
  * Artifact renderer registry — the extension point for tool-part UI.
@@ -50,4 +51,11 @@ export const artifactRenderers: Record<string, ComponentType<ArtifactPartProps>>
 	// discipline (their results are pre-formatted strings too).
 	list_sessions: ToolCallCard,
 	list_propositions: ToolCallCard,
+	// The learner layer (PLAN.md Phases 4–5): assumption chips under the
+	// message, the stack's own moves as quiet lines, bridge lookups as the
+	// quiet tool-call card.
+	assumptions: AssumptionChips,
+	stack_push: StackToolLine,
+	stack_pop: StackToolLine,
+	my_bridges: ToolCallCard,
 };

@@ -13,7 +13,7 @@ import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
 import { SubscriptionRequestCycle, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
 import { reconstructRequestCause } from "../core/native-messages.ts";
 import { createJobRunner } from "../agent/subagents/runner.ts";
-import { createExtractionPipeline } from "../agent/subagents/extraction.ts";
+import { createExtractionPipeline, type ExtractionPipeline } from "../agent/subagents/extraction.ts";
 import type { ModelRole } from "../../config.ts";
 import {
 	deliverJobResult,
@@ -30,7 +30,7 @@ import {
 import { runPiTurn } from "./pi/ui-stream.ts";
 import { collectToolCallIds } from "./pi/call-ids.ts";
 import { providerEventNote } from "../agent/provider-events.ts";
-import { effectiveSettings, stores } from "./stores.ts";
+import { effectiveSettings, stores, storesForChat, workspaceStores } from "./stores.ts";
 import { searchAvailable, searchProvider } from "./search.ts";
 import { providerKeyPresent } from "./keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
@@ -61,6 +61,9 @@ import {
 	type TurnInput,
 } from "../core/input-events.ts";
 import { steerDelivered } from "../core/contracts.ts";
+import { pendingFeedbackMarkers } from "./learner.ts";
+import { configureLearnerTracing, learnerContextMarkerFor, recordStackEvidence, triggerTracing } from "./learner-model.ts";
+import { bridgeAnswer } from "./learner-bridges.ts";
 import type {CallUsage} from "../core/contracts.ts";
 
 /**
@@ -114,23 +117,33 @@ const jobRunner = createJobRunner({
 	// same signal so keyless servers never see the research tool at all.
 	searchProvider,
 });
-/** The app's ONE extraction pipeline instance — both front doors share it:
- *  quiz-triggered session runs (turn-service) and notes imports
- *  (/api/graph/import) hit the same single-flight registry. */
-export const extraction = createExtractionPipeline({
-	...stores,
-	// BYOK (owner, 2026-09-22): the extraction stages resolve the chain —
-	// role override → slot → NOTHING — read FRESH per stage call; an empty
-	// chain flows through as undefined and the pipeline refuses the run
-	// with the typed ModelsNotConfiguredError. Direct test values still win.
-	engineFor: (role) =>
-		resolveEngine(role),
-	// Key-presence gate (provider-key interlude, 2026-09-25): same check
-	// the job runner gets — a stage engine whose provider key is gone
-	// refuses BEFORE any batch runs (the typed throw), never mid-run.
-	providerKeyMissing: (provider, tier) =>
-		providerKeyPresent(provider) ? null : providerKeyMissingEnvelope(provider, [tier]),
-});
+/** ONE extraction pipeline per course workspace (PLAN.md Phase 1) — each
+ *  bound to that workspace's graph store, all sharing the process-wide
+ *  status registry and audit→merge lock. Both front doors use it:
+ *  quiz-triggered session runs (turn-service, the chat's own workspace) and
+ *  notes imports (/api/graph/import, the requested workspace). */
+const extractionPipelines = new Map<string, ExtractionPipeline>();
+export function extractionFor(workspaceId: string): ExtractionPipeline {
+	let pipeline = extractionPipelines.get(workspaceId);
+	if (!pipeline) {
+		pipeline = createExtractionPipeline({
+			...workspaceStores(workspaceId),
+			// BYOK (owner, 2026-09-22): the extraction stages resolve the chain —
+			// role override → slot → NOTHING — read FRESH per stage call; an empty
+			// chain flows through as undefined and the pipeline refuses the run
+			// with the typed ModelsNotConfiguredError. Direct test values still win.
+			engineFor: (role) =>
+				resolveEngine(role),
+			// Key-presence gate (provider-key interlude, 2026-09-25): same check
+			// the job runner gets — a stage engine whose provider key is gone
+			// refuses BEFORE any batch runs (the typed throw), never mid-run.
+			providerKeyMissing: (provider, tier) =>
+				providerKeyPresent(provider) ? null : providerKeyMissingEnvelope(provider, [tier]),
+		});
+		extractionPipelines.set(workspaceId, pipeline);
+	}
+	return pipeline;
+}
 
 
 // Wake-pipeline wiring (contracts.ts "THE ASYNC PROTOCOL" §4): the pipeline
@@ -160,6 +173,18 @@ function retentionForSlot(slot: ModelSlotName) {
 }
 
 setJobRespawn((jobId) => void jobRunner.runJob(jobId));
+
+// The reasoning-trace extractor (PLAN.md Phase 3): the tracer role on the
+// cheap slot, read fresh per run; a missing key or background consent turns
+// tracing off for that run (inputs stay untraced for the next one).
+configureLearnerTracing({
+	engineFor: () => {
+		const engine = resolveEngine("tracer");
+		if (!engine) return undefined;
+		const provider = engine.model.provider;
+		return providerKeyPresent(provider) && connectionBackgroundAllowed(provider) ? engine : undefined;
+	},
+});
 
 /** The route-facing entry: parse {chatId, input} and run one turn. */
 export async function handleChatRequest(
@@ -197,7 +222,10 @@ export async function handleChatInput(
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
 ): Promise<Response> {
 	let record = stores.chatStore.getChat(chatId);
-	if (!record) {
+	// The chat's OWN workspace (D1): every graph read, job and extraction
+	// this turn starts stays inside it, whatever the UI's active course is.
+	const scoped = storesForChat(chatId);
+	if (!record || !scoped) {
 		return Response.json({ error: "Unknown chat" }, { status: 404 });
 	}
 
@@ -320,7 +348,7 @@ export async function handleChatInput(
 		appends =
 			input.type === "steers"
 				? input.steers.filter((s) => !steerDelivered(record.messages, s.id))
-				: inputAppends(record, input);
+				: inputAppends({ ...record, stackMaxDepth: effective.learner.stackMaxDepth }, input);
 	} catch (err) {
 		if (err instanceof ChatInputError) {
 			return Response.json({ error: err.message }, { status: 400 });
@@ -347,6 +375,19 @@ export async function handleChatInput(
 		}
 		emit("record-changed", { chatId });
 		return settledTurnResponse(); // the cheap terminal — no beginTurn, no turn
+	}
+
+	// THE LEARNER LAYER (PLAN.md Phases 2–3): feedback the learner gave
+	// while the chat was busy rides this learner input (decision D3), after
+	// the input's own appends — the parallel-question gate above already
+	// returned for a batch still holding a dangling sibling question, so a
+	// marker never lands between a question call and its answer.
+	if (input.type === "text" || input.type === "answer" || input.type === "thinking" || input.type === "next" || input.type === "stack") {
+		appends = [...appends, ...pendingFeedbackMarkers(chatId, [...record.messages, ...appends])];
+		// The learner-profile summary (decision D2): appended at the session's
+		// first such input and again only when the active traits changed.
+		const context = learnerContextMarkerFor(chatId, [...record.messages, ...appends]);
+		if (context) appends = [...appends, context];
 	}
 
 	// One turn per chat, ever. A second request while a turn runs means a
@@ -471,7 +512,7 @@ export async function handleChatInput(
 						// WHOLE graph fresh per pose — targets validate against every
 						// proposition, not just the session's picks (pickless sessions
 						// and future graph-tools poses stay valid).
-						graphNodes: () => stores.graphStore.readNodes(),
+						graphNodes: () => scoped.graphStore.readNodes(),
 						// THE RARELY-NEEDED SET (owner round 10): research + pdf jobs
 						// (same runner/gating as the teacher's — research honestly
 						// absent when no engine is live) and the map readers behind
@@ -482,7 +523,9 @@ export async function handleChatInput(
 							spawn: (job, input) => void jobRunner.runJob(job.id, input),
 							searchAvailable,
 						},
-						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
+						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: scoped.graphStore } } : {}),
+						// The learner's own concept links (PLAN.md Phase 5).
+						...(effective.learner.enabled ? { bridges: bridgeAnswer } : {}),
 					},
 					agentOpts,
 				)
@@ -496,6 +539,8 @@ export async function handleChatInput(
 						// The registry drop's signal (2026-09-20): no live engine
 						// = no research tool in the teacher's registry.
 						searchAvailable,
+						stackMaxDepth: () => effectiveSettings().learner.stackMaxDepth,
+						...(effective.learner.enabled ? { bridges: bridgeAnswer } : {}),
 					},
 					agentOpts,
 				)
@@ -513,7 +558,8 @@ export async function handleChatInput(
 						// The map reader (wave 7): the prober reads the learner's
 						// knowledge graph through tools when the gate opens —
 						// graph master switch AND the agent.graphTools toggle.
-						...(graphToolsEnabled(effective) ? { graphStore: stores.graphStore } : {}),
+						...(graphToolsEnabled(effective) ? { graphStore: scoped.graphStore } : {}),
+						...(effective.learner.enabled ? { bridges: bridgeAnswer } : {}),
 					},
 					agentOpts,
 				);
@@ -606,7 +652,19 @@ export async function handleChatInput(
 					// Fresh per-turn read of the graph section's chunk budget
 					// (extraction-UX redesign, 2026-09-24): the trigger compares
 					// against it and the pipeline's batches share it.
-					triggerExtraction(stores, extraction, chatId, effective.graph.extractionChunkTokens);
+					triggerExtraction(scoped, extractionFor(scoped.workspaceId), chatId, effective.graph.extractionChunkTokens);
+				}
+				// THE LEARNING STACK (PLAN.md Phase 4): pushes become missing-
+				// assumption evidence, resolutions feed the concept links.
+				try {
+					recordStackEvidence(chatId);
+				} catch (err) {
+					console.error(`[chat ${chatId}] stack evidence failed:`, err);
+				}
+				// THE REASONING-STYLE MODEL (PLAN.md Phase 3): trace the learner's
+				// new inputs in the background — teaching AND practice sessions.
+				if ((!requestCycle || requestCycle.dispatched) && effective.learner.enabled && effective.learner.traceExtraction) {
+					triggerTracing(chatId);
 				}
 				// PARKED DISMISSAL (owner, 2026-10-04): a dismissal that arrived
 				// mid-turn was parked by the dismiss route (202); now that

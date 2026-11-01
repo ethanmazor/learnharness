@@ -1,6 +1,7 @@
 /**
  * Server-side persistence for the graph render settings (the settings-panel
- * controls): data/render-settings.json — read-modify-write, NOT a ledger.
+ * controls): workspaces/<id>/graph/render-settings.json (per course — each
+ * workspace's graph keeps its own look; absent paths = the General workspace) — read-modify-write, NOT a ledger.
  *
  * The shape, defaults, and sanitizer live in src/core/render-settings.ts
  * (pure, shared with the client); this module only moves bytes. Whatever
@@ -11,16 +12,16 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { RENDER_SETTINGS_FILE } from "../../config.ts";
+import { GENERAL_WORKSPACE_ID, workspacePaths, type WorkspacePaths } from "../../config.ts";
 import { DEFAULT_RENDER_SETTINGS, sanitizeRenderSettings, type GraphRenderSettings } from "../core/render-settings.ts";
 import { assertGraphFormat, ensureGraphFormat } from "./graph-format.ts";
 
 /** The persisted settings, or null when no file exists yet (first boot). */
-export function readRenderSettings(): GraphRenderSettings | null {
-	assertGraphFormat(); // honest refusal on a newer-stamped data dir
+export function readRenderSettings(paths: WorkspacePaths = workspacePaths(GENERAL_WORKSPACE_ID)): GraphRenderSettings | null {
+	assertGraphFormat(paths.graphFormat); // honest refusal on a newer-stamped data dir
 	let raw: string;
 	try {
-		raw = fs.readFileSync(RENDER_SETTINGS_FILE, "utf-8");
+		raw = fs.readFileSync(paths.renderSettings, "utf-8");
 	} catch {
 		return null; // never booted / unreadable → caller uses defaults
 	}
@@ -32,11 +33,11 @@ export function readRenderSettings(): GraphRenderSettings | null {
 }
 
 /** Persist settings (sanitized). Returns what was written. */
-export function writeRenderSettings(raw: unknown): GraphRenderSettings {
+export function writeRenderSettings(raw: unknown, paths: WorkspacePaths = workspacePaths(GENERAL_WORKSPACE_ID)): GraphRenderSettings {
 	const settings = sanitizeRenderSettings(raw);
-	fs.mkdirSync(path.dirname(RENDER_SETTINGS_FILE), { recursive: true });
-	ensureGraphFormat(); // the lazy format stamp (graph-format.ts)
-	fs.writeFileSync(RENDER_SETTINGS_FILE, JSON.stringify(settings, null, "\t"), "utf-8");
+	fs.mkdirSync(path.dirname(paths.renderSettings), { recursive: true });
+	ensureGraphFormat(paths.graphFormat); // the lazy format stamp (graph-format.ts)
+	fs.writeFileSync(paths.renderSettings, JSON.stringify(settings, null, "\t"), "utf-8");
 	return settings;
 }
 

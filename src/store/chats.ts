@@ -1,5 +1,9 @@
 /**
- * ChatStore — the fs JSON adapter (one file per chat in data/chats/).
+ * ChatStore — the fs JSON adapter (one file per chat in
+ * workspaces/<id>/chats/). ROUTING (PLAN.md Phase 1): chat ids are globally
+ * unique, so every id-keyed operation finds the chat's own workspace
+ * (workspaces.ts workspaceOfChat) — a chat never leaves its course, and no
+ * caller has to name the workspace except at creation.
  *
  * Implements core/ports.ts ChatStore; the record shapes live in
  * core/contracts.ts (ChatRecord/ChatSummary). Idioms: sync fs, tiny
@@ -9,7 +13,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { PATHS } from "../../config.ts";
+import { workspacePaths } from "../../config.ts";
+import { noteChatLocation, workspaceStore, writableWorkspace } from "./workspaces.ts";
 import { emit } from "../core/events.ts";
 import type { ChatStore } from "../core/ports.ts";
 import type { ChatRecord, ChatSettings, ChatSummary, ExtractionRunUsage, PlanTree, TurnUsage } from "../core/contracts.ts";
@@ -18,9 +23,16 @@ import type { LhMessage } from "../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../core/native-messages.ts";
 import { phaseAt3Lh } from "../core/phases.ts";
 
-function chatFile(id: string): string {
+function chatFileIn(workspaceId: string, id: string): string {
 	if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Invalid chat id: ${id}`);
-	return path.join(PATHS.chats, `${id}.json`);
+	return path.join(workspacePaths(workspaceId).chats, `${id}.json`);
+}
+
+/** The existing chat's file, or null when no workspace holds it. */
+function chatFile(id: string): string | null {
+	if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Invalid chat id: ${id}`);
+	const workspaceId = workspaceStore.workspaceOfChat(id);
+	return workspaceId ? chatFileIn(workspaceId, id) : null;
 }
 
 /** THE SILENCE LAW (push S6, 2026-10-02): chats-changed announces ONLY
@@ -32,7 +44,8 @@ function chatFile(id: string): string {
  *  phase, busy, pendingQuestion) is already announced by turn-started /
  *  turn-settled, which the sidebar refetches on. Silence here is law,
  *  not oversight. */
-function createChat(title: string, kind?: "practice"): ChatRecord {
+function createChat(title: string, kind?: "practice", workspaceId?: string): ChatRecord {
+	const workspace = writableWorkspace(workspaceId);
 	const now = new Date().toISOString();
 	const record: ChatRecord = {
 		id: `chat_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
@@ -44,8 +57,9 @@ function createChat(title: string, kind?: "practice"): ChatRecord {
 		// reads as teach — pre-practice records never migrate).
 		...(kind === "practice" ? { kind: "practice" as const } : {}),
 	};
-	fs.mkdirSync(PATHS.chats, { recursive: true });
-	writeChat(record);
+	fs.mkdirSync(workspacePaths(workspace).chats, { recursive: true });
+	writeChatTo(chatFileIn(workspace, record.id), record);
+	noteChatLocation(record.id, workspace);
 	emit("chats-changed", {});
 	return { ...record, version: CURRENT_CHAT_VERSION }; // the in-memory twin of what landed on disk
 }
@@ -55,13 +69,24 @@ function createChat(title: string, kind?: "practice"): ChatRecord {
  *  lazy migration means existing files only get stamped on their next write.
  *  A future-version guard lives on the read side (getChat). */
 function writeChat(record: ChatRecord): void {
-	fs.writeFileSync(chatFile(record.id), JSON.stringify({ ...record, version: CURRENT_CHAT_VERSION }, null, "\t"), "utf-8");
+	const file = chatFile(record.id);
+	if (!file) throw new Error(`Chat not found: ${record.id}`);
+	writeChatTo(file, record);
+}
+
+function writeChatTo(file: string, record: ChatRecord): void {
+	fs.writeFileSync(file, JSON.stringify({ ...record, version: CURRENT_CHAT_VERSION }, null, "\t"), "utf-8");
 }
 
 function getChat(id: string): ChatRecord | null {
+	const file = chatFile(id);
+	return file ? readChatFile(id, file) : null;
+}
+
+function readChatFile(id: string, file: string): ChatRecord | null {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(fs.readFileSync(chatFile(id), "utf-8"));
+		parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
 	} catch {
 		return null;
 	}
@@ -77,12 +102,20 @@ function getChat(id: string): ChatRecord | null {
 }
 
 function listChats(): ChatSummary[] {
+	return workspaceStore
+		.list()
+		.flatMap((workspace) => listChatsIn(workspace.id))
+		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function listChatsIn(workspaceId: string): ChatSummary[] {
+	const dir = workspacePaths(workspaceId).chats;
 	try {
-		fs.mkdirSync(PATHS.chats, { recursive: true });
+		fs.mkdirSync(dir, { recursive: true });
 		return fs
-			.readdirSync(PATHS.chats)
+			.readdirSync(dir)
 			.filter((f) => f.endsWith(".json"))
-			.map((f) => getChat(f.slice(0, -5)))
+			.map((f) => readChatFile(f.slice(0, -5), path.join(dir, f)))
 			.filter((r): r is ChatRecord => r !== null)
 			.map(({ messages, tree, turns, extractions, ...summary }) => {
 				// Per-record isolation (Wave B): a record whose messages fail the
@@ -91,6 +124,7 @@ function listChats(): ChatSummary[] {
 				// whole sidebar — same isolation getChat's per-file catch gives.
 				try {
 					return {
+						workspaceId,
 						// turns and extractions stay out of the list payload (list =
 						// summaries; usage aggregates ride the full record, the picker
 						// never needs them).
@@ -187,7 +221,9 @@ function renameChat(id: string, title: string): ChatRecord {
  *  choreography (core/graph-deletion.ts), not the store's. */
 function deleteChat(id: string): boolean {
 	try {
-		fs.unlinkSync(chatFile(id));
+		const file = chatFile(id);
+		if (!file) return false;
+		fs.unlinkSync(file);
 		emit("chats-changed", {}); // only a real removal — the present-entry law
 		return true;
 	} catch {
@@ -204,6 +240,9 @@ function saveTree(id: string, tree: PlanTree): void {
 	// turn's saveMessages, and sidebar ordering shouldn't churn on tree edits.
 	writeChat(record);
 }
+
+/** One workspace's chat summaries (graph cost and coverage views). */
+export { listChatsIn };
 
 export const chatStore: ChatStore = {
 	createChat,

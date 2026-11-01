@@ -79,8 +79,11 @@ The default is the normal installed application's data folder:
 | Windows | `%APPDATA%\LearnHarness\data` |
 | Linux | `$XDG_CONFIG_HOME/LearnHarness/data`, or `~/.config/LearnHarness/data` |
 
-This is the directory **containing** `chats/` and `graph/`, not their parent
-`LearnHarness/` profile directory. For a moved installation, backup, development
+This is the directory **containing** `workspaces/` (or, in versions before course
+workspaces, `chats/` and `graph/`), not their parent `LearnHarness/` profile
+directory. Each course lives in `workspaces/<id>/` with its own `chats/` and
+`graph/`; readers use the course active in the app unless `--workspace ID` names
+another (an unknown ID lists the available ones). For a moved installation, backup, development
 copy, or an app configured with `LH_DATA_DIR`, use `--data-dir` explicitly. Readers
 print the selected directory and never create a missing folder or silently switch
 to another copy.
@@ -91,7 +94,7 @@ Resolve `scripts/` relative to **this skill directory**, not the current project
 Examples below assume that directory is the working directory. On Windows,
 `py -3 -B` can replace `python3 -B` when using the Python launcher.
 
-Global options (`--data-dir`, `--format`) go **before** the subcommand.
+Global options (`--data-dir`, `--workspace`, `--format`) go **before** the subcommand.
 
 ### Sessions
 

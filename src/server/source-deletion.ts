@@ -1,8 +1,8 @@
 import { deleteSourcesTraces } from "../core/graph-deletion.ts";
 import { folderIsEmpty, type SourceDirectory } from "../core/source-organization.ts";
 import { extractionStatuses } from "../agent/subagents/extraction.ts";
-import { stores } from "./stores.ts";
-import { sourceDirectory } from "./source-organization.ts";
+import { workspaceStores } from "./stores.ts";
+import { sourceDirectoryFor } from "./source-organization.ts";
 import { deleteIdleChatRecord, runningWorkBlocker } from "./chats.ts";
 import { graphRevision } from "./graph.ts";
 
@@ -26,8 +26,10 @@ export function parseSourceDeletion(raw: unknown): SourceDeletionRequest {
 /** A single synchronous deletion stretch, after the same global extraction
  * refusal as the old chains-view deletion. No imports or turns are cancelled.
  * Missing entries are harmless on retry after a partially completed I/O failure. */
-export function deleteSources(raw: unknown): SourceDirectory & { graphRevision: number } {
+export function deleteSources(workspaceId: string, raw: unknown): SourceDirectory & { graphRevision: number } {
 	const request = parseSourceDeletion(raw);
+	const stores = workspaceStores(workspaceId);
+	const sourceDirectory = sourceDirectoryFor(workspaceId);
 	const directory = sourceDirectory.read(); // validate organization before any destructive write
 	const targets = directory.sources.filter((s) => request.sourceIds.includes(s.id));
 	if (targets.length && extractionStatuses().length) throw new SourceDeletionError("An extraction is running — try again when the activity dock drains.", 409, "extraction_running");

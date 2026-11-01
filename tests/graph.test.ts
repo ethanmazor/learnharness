@@ -936,7 +936,7 @@ describe("single-node deletion (deleteNodeTraces + deleteGraphNode, node interlu
 
 	it("deleteGraphNode: the orchestration — extraction gate, 404, success", () => {
 		// 404 — unknown node.
-		assert.deepEqual(deleteGraphNode("n_missing_node"), {
+		assert.deepEqual(deleteGraphNode("general", "n_missing_node"), {
 			ok: false,
 			status: 404,
 			code: "not_found",
@@ -958,7 +958,7 @@ describe("single-node deletion (deleteNodeTraces + deleteGraphNode, node interlu
 			lastStartedAt: 0,
 		};
 		try {
-			assert.deepEqual(deleteGraphNode("n_gate_probe"), {
+			assert.deepEqual(deleteGraphNode("general", "n_gate_probe"), {
 				ok: false,
 				status: 409,
 				code: "extraction_running",
@@ -978,14 +978,14 @@ describe("single-node deletion (deleteNodeTraces + deleteGraphNode, node interlu
 			provenance: [{ chatId: "chat_node_c", messageId: "m1" }],
 		});
 		const revisionBefore = graphRevision();
-		const outcome = deleteGraphNode("n_orch");
+		const outcome = deleteGraphNode("general", "n_orch");
 		assert.ok(outcome.ok);
 		assert.deepEqual(outcome.stats, { chainsRemoved: 0 });
 		assert.ok(outcome.graphRevision > 0);
 		assert.ok(outcome.graphRevision >= revisionBefore, "the version stamp moved");
 		assert.equal(graphStore.readNodes().some((n) => n.id === "n_orch"), false);
 		// And a second call is an honest 404.
-		assert.deepEqual(deleteGraphNode("n_orch"), { ok: false, status: 404, code: "not_found", error: "No such node" });
+		assert.deepEqual(deleteGraphNode("general", "n_orch"), { ok: false, status: 404, code: "not_found", error: "No such node" });
 	});
 });
 

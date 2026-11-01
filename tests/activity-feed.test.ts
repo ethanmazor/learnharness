@@ -53,7 +53,7 @@ test("activityFeed: running jobs across ALL chats, running-only, title-joined, o
 	} finally {
 		fs.unlinkSync(`${PATHS.chats}/${chatA.id}.json`);
 		fs.unlinkSync(`${PATHS.chats}/${chatB.id}.json`);
-		const jobsDir = path.join(PATHS.data, "jobs");
+		const jobsDir = path.join(PATHS.data, "workspaces", "general", "jobs");
 		for (const id of createdJobs) {
 			fs.unlinkSync(path.join(jobsDir, `${id}.json`));
 		}
@@ -97,7 +97,7 @@ test("activityFeed: contextLimit is the server's live-catalog join (owner amendm
 		assert.equal(bareJob.costUsd, null);
 	} finally {
 		fs.unlinkSync(`${PATHS.chats}/${chat.id}.json`);
-		const jobsDir = path.join(PATHS.data, "jobs");
+		const jobsDir = path.join(PATHS.data, "workspaces", "general", "jobs");
 		for (const id of createdJobs) {
 			fs.unlinkSync(path.join(jobsDir, `${id}.json`));
 		}

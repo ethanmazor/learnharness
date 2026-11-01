@@ -1,6 +1,6 @@
 import { NewSession } from "@/components/new-session";
 import { readSettingsRecord } from "@/src/server";
-import { slotsConfigured } from "@/src/core";
+import { isWorkspaceId, slotsConfigured } from "@/src/core";
 
 export const dynamic = "force-dynamic";
 
@@ -18,13 +18,16 @@ export const dynamic = "force-dynamic";
 export default async function NewSessionPage({
 	searchParams,
 }: {
-	searchParams: Promise<{ mode?: string }>;
+	searchParams: Promise<{ mode?: string; workspace?: string }>;
 }) {
-	const { mode } = await searchParams;
+	const { mode, workspace } = await searchParams;
 	return (
 		<NewSession
 			initialConfigured={slotsConfigured(readSettingsRecord()?.models)}
 			mode={mode === "practice" ? "practice" : "teach"}
+			// The course this draft lands in (PLAN.md Phase 1): the sidebar's
+			// per-course "+" names it; absent = the active course.
+			workspaceId={workspace && isWorkspaceId(workspace) ? workspace : undefined}
 		/>
 	);
 }

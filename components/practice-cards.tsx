@@ -32,9 +32,14 @@ import { usePopoverDismiss } from "@/components/popover-dismiss";
  * lazy module-cached fetch of the graph view (the id → name map is a
  * few KB); failures degrade to raw ids — observability never breaks the
  * card. */
-let nodeNameMapPromise: Promise<Record<string, string>> | null = null;
+// Keyed by chat (PLAN.md Phase 1): a practice chat's targets live in ITS
+// course's graph, whichever course the home view currently shows.
+const nodeNameMapPromises = new Map<string, Promise<Record<string, string>>>();
 function nodeNameMap(): Promise<Record<string, string>> {
-	nodeNameMapPromise ??= fetch("/api/graph")
+	const chatId = typeof window === "undefined" ? "" : (/^\/chat\/([A-Za-z0-9_-]+)/.exec(window.location.pathname)?.[1] ?? "");
+	const cached = nodeNameMapPromises.get(chatId);
+	if (cached) return cached;
+	const nodeNameMapPromise = fetch(chatId ? `/api/graph?chat=${encodeURIComponent(chatId)}` : "/api/graph")
 		.then((r) => (r.ok ? r.json() : { nodes: [] }))
 		.then((g: { nodes?: Array<{ id?: unknown; name?: unknown }> }) =>
 			Object.fromEntries(
@@ -44,6 +49,7 @@ function nodeNameMap(): Promise<Record<string, string>> {
 			),
 		)
 		.catch(() => ({}));
+	nodeNameMapPromises.set(chatId, nodeNameMapPromise);
 	return nodeNameMapPromise;
 }
 

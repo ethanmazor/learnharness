@@ -18,18 +18,84 @@ const DATA_ROOT = process.env.LH_DATA_DIR
 	? path.resolve(process.env.LH_DATA_DIR)
 	: path.join(ROOT, "data");
 
+/** The workspace every legacy record migrates into, and the one that can
+ *  never be deleted (there is always at least one course). */
+export const GENERAL_WORKSPACE_ID = "general";
+
+/**
+ * COURSE WORKSPACES (PLAN.md Phase 1): every chat, job and knowledge-graph
+ * file lives inside ONE workspace directory — workspaces/<id>/{chats,jobs,
+ * graph,imports}. The data root keeps only the GLOBAL records: settings,
+ * prompt overrides, debug traces, the learner layer (learner/) and the
+ * migration backups. Paths for one workspace come from workspacePaths(id);
+ * the store layer binds adapters to them (src/store/workspaces.ts).
+ */
 export const PATHS = {
 	root: ROOT,
 	/** Teacher system prompt — the agent's instructions (src/agent/). */
 	teacherPrompt: path.join(ROOT, "src", "agent", "system-prompt.md"),
 	data: DATA_ROOT,
-	/** Chat sessions (AI SDK UIMessage transcripts, one JSON file per chat). */
-	chats: path.join(DATA_ROOT, "chats"),
-	graph: path.join(DATA_ROOT, "graph"),
+	/** One directory per course workspace, plus index.json (the active one). */
+	workspaces: path.join(DATA_ROOT, "workspaces"),
+	/** The global learner layer above all workspaces (feedback, traces,
+	 *  profile, bridges) — never written into a workspace graph. */
+	learner: path.join(DATA_ROOT, "learner"),
+	/** Migration backups and deleted workspaces (never read by the app). */
+	backups: path.join(DATA_ROOT, "backups"),
+	/** The GENERAL workspace's chats and graph directories. Production code
+	 *  resolves paths per workspace; these name the default workspace for
+	 *  tests, scripts and the migration. */
+	chats: path.join(DATA_ROOT, "workspaces", GENERAL_WORKSPACE_ID, "chats"),
+	graph: path.join(DATA_ROOT, "workspaces", GENERAL_WORKSPACE_ID, "graph"),
 	/** Debug artifacts (env-gated): data/debug/provider-events/<chatId>.jsonl
 	 * raw provider stream recordings (src/agent/provider-events.ts). */
 	debug: path.join(DATA_ROOT, "debug"),
 } as const;
+
+/** Every path inside one workspace directory. Ids are validated by the
+ *  caller (src/store/workspaces.ts); this is pure path arithmetic. */
+export interface WorkspacePaths {
+	root: string;
+	/** workspace.json — the workspace's name/archive record. */
+	meta: string;
+	chats: string;
+	jobs: string;
+	graph: string;
+	/** Reserved for future per-course documents (created empty). */
+	imports: string;
+	ledgers: { nodes: string; chains: string; sessions: string; coverage: string };
+	sources: string;
+	sourceOrganization: string;
+	positions: string;
+	renderSettings: string;
+	graphFormat: string;
+}
+
+export function workspacePaths(id: string): WorkspacePaths {
+	const root = path.join(PATHS.workspaces, id);
+	const graph = path.join(root, "graph");
+	return {
+		root,
+		meta: path.join(root, "workspace.json"),
+		chats: path.join(root, "chats"),
+		jobs: path.join(root, "jobs"),
+		graph,
+		imports: path.join(root, "imports"),
+		ledgers: {
+			nodes: path.join(graph, "nodes.jsonl"),
+			chains: path.join(graph, "chains.jsonl"),
+			sessions: path.join(graph, "sessions.jsonl"),
+			coverage: path.join(graph, "coverage.jsonl"),
+		},
+		sources: path.join(graph, "sources.json"),
+		sourceOrganization: path.join(graph, "source-organization.json"),
+		positions: path.join(graph, "positions.json"),
+		renderSettings: path.join(graph, "render-settings.json"),
+		graphFormat: path.join(graph, "format.json"),
+	};
+}
+
+const GENERAL_PATHS = workspacePaths(GENERAL_WORKSPACE_ID);
 
 // ─── Models ────────────────────────────────────────────────────────────────
 // BYOK ALL THE WAY DOWN (owner, 2026-09-22): there are NO factory default
@@ -52,48 +118,43 @@ export type ModelRole =
 	| "visualMaker"
 	| "pdfReader"
 	| "extractor"
-	| "auditor";
+	| "auditor"
+	/** The reasoning-trace extractor (PLAN.md Phase 3) — cheap slot. */
+	| "tracer";
 
 /**
- * The LIVE graph store (src/store/graph.ts) — owned by the app's extraction
- * pipeline. Line shapes: src/core/contracts.ts. CHAINS ARE THE STORED
+ * The GENERAL workspace's graph files (tests/scripts; production resolves
+ * workspacePaths(id).ledgers). The graph store (src/store/graph.ts) is owned
+ * by the app's extraction pipeline. Line shapes: src/core/contracts.ts. CHAINS ARE THE STORED
  * TRUTH (owner, 2026-09-30): edges are a derived view, never stored.
  */
-export const LEDGER_FILES = {
-	nodes: path.join(PATHS.graph, "nodes.jsonl"),
-	chains: path.join(PATHS.graph, "chains.jsonl"),
-	sessions: path.join(PATHS.graph, "sessions.jsonl"),
-	/** Per-message extraction coverage (contracts/graph.ts CoverageEntry;
-	 *  the checkpoint's replacement for chat extractions — notes keep
-	 *  sessions.jsonl, whole-file as they are). */
-	coverage: path.join(PATHS.graph, "coverage.jsonl"),
-} as const;
+export const LEDGER_FILES = GENERAL_PATHS.ledgers;
 
 /**
  * Notes-import bookkeeping (NOT a ledger): one JSON map, src-id → NotesSource
  * record (contracts/graph.ts) — the file path + import time + the run's usage
  * log. Read-modify-write like a chat file, not append-only like the ledgers.
  */
-export const SOURCES_FILE = path.join(PATHS.graph, "sources.json");
+export const SOURCES_FILE = GENERAL_PATHS.sources;
 /** Presentation-only source names/folder placement; never extraction identity. */
-export const SOURCE_ORGANIZATION_FILE = path.join(PATHS.graph, "source-organization.json");
+export const SOURCE_ORGANIZATION_FILE = GENERAL_PATHS.sourceOrganization;
 /** The layout ledger (read-modify-write like sources.json): nodeId →
  *  {x,y} resting positions from the incremental settle (core/layout.ts).
  *  Carries an updatedAt stamp for future live-physics conflict handling. */
-export const POSITIONS_FILE = path.join(PATHS.graph, "positions.json");
+export const POSITIONS_FILE = GENERAL_PATHS.positions;
 
 /**
  * Graph render settings (the settings-panel controls): one small JSON blob,
  * read-modify-write. Shared shape/sanitizer: src/core/render-settings.ts.
  */
-export const RENDER_SETTINGS_FILE = path.join(PATHS.graph, "render-settings.json");
+export const RENDER_SETTINGS_FILE = GENERAL_PATHS.renderSettings;
 
 /** The graph-family FORMAT STAMP sidecar (schema-versioning wave,
  *  2026-10-10): one version for the whole family — the four JSONL ledgers,
  *  sources.json, render-settings.json. LAZY v1: absent = v1; the first
  *  graph-family write creates it. positions.json is REBUILDABLE and rides
  *  along unversioned by design (owner ruling). */
-export const GRAPH_FORMAT_FILE = path.join(PATHS.graph, "format.json");
+export const GRAPH_FORMAT_FILE = GENERAL_PATHS.graphFormat;
 
 /**
  * THE USER SETTINGS RECORD (settings-storage wave, 2026-09-19): one

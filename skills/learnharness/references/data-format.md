@@ -8,7 +8,11 @@ pre-native `parts`/UIMessage transcripts are a different, unsupported dialect.
 
 ## File map
 
-Paths below are relative to the selected **data** directory:
+Course workspaces: the data directory holds `workspaces/index.json` (the active
+course) and one `workspaces/<id>/` folder per course, each with its own `chats/`,
+`jobs/`, `graph/` and `imports/`. Paths below are relative to ONE course folder
+(older data folders keep them directly in the data directory). The learner model
+lives globally in `learner/` (feedback, reasoning traces, profile, bridges):
 
 ```text
 chats/<session-id>.json    Full session: messages, optional plan, usage metadata

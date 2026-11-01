@@ -4,6 +4,8 @@ interface SessionCreation {
 	title: string;
 	kind?: "practice";
 	graphContext?: { propositions: readonly { id: string; name: string; statement: string }[] };
+	/** The course workspace the session lives in (absent = the active one). */
+	workspaceId?: string;
 }
 
 /** Per source-composer instance. Retain a successful creation if storage

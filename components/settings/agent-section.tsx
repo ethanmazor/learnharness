@@ -186,7 +186,7 @@ export const PROMPT_IN_USE_HINT = "Your version is in use";
 /** One section of the prompt view — the owner's ruled order: Teacher,
  *  Prober, then Shared last. */
 export interface PromptSection {
-	id: "teacher" | "prober" | "shared";
+	id: "teacher" | "prober" | "practice" | "tracer" | "shared";
 	label: string;
 	/** The one header that earns a hint: "Shared" alone is not
 	 *  self-evident. Teacher/Prober are. */
@@ -202,18 +202,30 @@ export interface PromptSection {
  *  agents' own chunks keep their lists' order — which IS the prompt
  *  assembly order (numeric-prefix filename sort). Pure — exported for
  *  tests. */
-export function sectionedSegments(view: { prober: SegmentInfo[]; teacher: SegmentInfo[] }): PromptSection[] {
-	const own = (who: "prober" | "teacher") => view[who].filter((s) => !s.shared);
+export function sectionedSegments(view: PromptsView): PromptSection[] {
+	const own = (who: "prober" | "teacher" | "practice" | "tracer") => (view[who] ?? []).filter((s) => !s.shared);
 	return [
 		{ id: "teacher", label: "Teacher", segments: own("teacher") },
 		{ id: "prober", label: "Prober", segments: own("prober") },
+		// Practice and the reasoning-trace extractor (PLAN.md Phase 3): their
+		// own fragments; practice's shared appendix is listed under Shared.
+		...(view.practice ? [{ id: "practice" as const, label: "Practice", segments: own("practice") }] : []),
+		...(view.tracer ? [{ id: "tracer" as const, label: "Reasoning tracer", hint: "Background worker that reads your thinking", segments: own("tracer") }] : []),
 		{
 			id: "shared",
 			label: "Shared",
-			hint: "Used by both agents",
+			hint: "Used by several agents",
 			segments: view.teacher.filter((s) => s.shared),
 		},
 	];
+}
+
+/** GET /api/settings/prompts — per-agent segment lists. */
+export interface PromptsView {
+	prober: SegmentInfo[];
+	teacher: SegmentInfo[];
+	practice?: SegmentInfo[];
+	tracer?: SegmentInfo[];
 }
 
 /** Compose: one prompt switch. on = explicit true; off = key REMOVED
@@ -311,7 +323,7 @@ export function AgentSection({
 	/** Which search engines have a key (/api/keys) — the no-keys-anywhere
 	 *  state grays the row; per-engine marks ride the menu rows. */
 	const [engineKeys, setEngineKeys] = useState<Partial<Record<(typeof SEARCH_ENGINES)[number], boolean>>>({});
-	const [prompts, setPrompts] = useState<{ prober: SegmentInfo[]; teacher: SegmentInfo[] } | null>(null);
+	const [prompts, setPrompts] = useState<PromptsView | null>(null);
 	const [openSegment, setOpenSegment] = useState<string | null>(null);
 	const [segmentDraft, setSegmentDraft] = useState<Record<string, string>>({});
 	const [segmentStatus, setSegmentStatus] = useState<string | null>(null);
@@ -337,7 +349,7 @@ export function AgentSection({
 	const readPrompts = useCallback(() => {
 		fetch("/api/settings/prompts")
 			.then((r) => r.json())
-			.then((body: { prober: SegmentInfo[]; teacher: SegmentInfo[] }) => setPrompts(body))
+			.then((body: PromptsView) => setPrompts(body))
 			.catch(() => {});
 	}, []);
 
@@ -354,7 +366,7 @@ export function AgentSection({
 	useEffect(() => {
 		fetch("/api/settings/prompts")
 			.then((r) => r.json())
-			.then((body: { prober: SegmentInfo[]; teacher: SegmentInfo[] }) => setPrompts(body))
+			.then((body: PromptsView) => setPrompts(body))
 			.catch(() => setPrompts(null));
 		fetch("/api/keys")
 			.then((r) => r.json())

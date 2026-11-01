@@ -6,7 +6,9 @@ import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
 import { DeleteSessionDialog } from "@/components/delete-session-dialog";
 import type { ChatDeleteMode } from "@/src/core";
-import { DumbbellIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { BrainIcon, ChevronRightIcon, DumbbellIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { CourseSwitcher, useWorkspaces } from "@/components/course-switcher";
+import { groupChatsByCourse, visibleRows, type CourseGroup } from "@/components/course-groups";
 import { ActivitySection } from "@/components/activity-dock";
 import { CoverageMenuBlock } from "@/components/extraction-coverage";
 import { LhMark } from "@/components/lh-mark";
@@ -306,6 +308,7 @@ export function SessionRow({
 			type="button"
 			onClick={onOpen}
 			onContextMenu={onContextMenu}
+			data-session-row=""
 			data-testid={kbdSelected ? "session-row-kbd" : "session-row"}
 			className={cn(
 				"relative mb-0.5 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-accent",
@@ -388,6 +391,42 @@ export function RenameRow({ chat, onCommit, onCancel }: { chat: ChatListItem; on
  *  snapshot, persisted in localStorage, defaulting to All. */
 export type SessionKindFilter = "teach" | "all" | "practice";
 const KIND_FILTER_KEY = "lh:session-kind-filter";
+/** The learner's own expand/collapse choice per course (localStorage). */
+const COURSE_EXPANDED_KEY = "lh:course-expanded";
+
+/** One course heading in the session list (PLAN.md Phase 1): the
+ *  collapse toggle with the course name and session count, plus "+" for a
+ *  new teaching session inside that course. Exported for render tests. */
+export function CourseHeader({ group, onToggle, onNew }: { group: CourseGroup; onToggle: () => void; onNew: () => void }) {
+	const { workspace, expanded, chats } = group;
+	return (
+		<div className="group/course flex items-center gap-0.5">
+			<button
+				type="button"
+				data-testid="course-header"
+				onClick={onToggle}
+				aria-expanded={expanded}
+				className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-1 text-left text-[11px] uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+			>
+				<ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
+				<span className={cn("min-w-0 truncate", workspace.active && "text-foreground")}>{workspace.name}</span>
+				<span className="ml-auto shrink-0 normal-case tracking-normal text-muted-foreground/70">{chats.length}</span>
+			</button>
+			{!workspace.archived && (
+				<button
+					type="button"
+					data-testid="course-new-session"
+					onClick={onNew}
+					aria-label={`New teaching session in ${workspace.name}`}
+					title={`New teaching session in ${workspace.name}`}
+					className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-60 transition-opacity hover:bg-accent hover:text-foreground hover:opacity-100 group-hover/course:opacity-100"
+				>
+					<PlusIcon className="size-3" />
+				</button>
+			)}
+		</div>
+	);
+}
 
 function SessionsSidebar() {
 	const { open, toggle } = useSidebar();
@@ -405,6 +444,30 @@ function SessionsSidebar() {
 	const pathname = usePathname();
 	const router = useRouter();
 	const { open: openSettings } = useSettingsDialog();
+
+	/* COURSE WORKSPACES (PLAN.md Phase 1): sessions group under their
+	   course. The active course is expanded by default, the others are
+	   collapsed; the learner's own toggles persist. Archived courses sit in
+	   a closed fold at the bottom. A search expands every course with a
+	   match and hides the rest. */
+	const { workspaces, mutate } = useWorkspaces();
+	const [expandedCourses, setExpandedCourses] = useState<Record<string, boolean>>({});
+	const [archivedOpen, setArchivedOpen] = useState(false);
+	useEffect(() => {
+		try {
+			const stored = JSON.parse(window.localStorage.getItem(COURSE_EXPANDED_KEY) ?? "{}") as unknown;
+			if (stored && typeof stored === "object") setExpandedCourses(stored as Record<string, boolean>);
+		} catch {
+			/* a corrupt or blocked store keeps the defaults */
+		}
+	}, []);
+	const toggleCourse = useCallback((id: string, expanded: boolean) => {
+		setExpandedCourses((prev) => {
+			const next = { ...prev, [id]: !expanded };
+			try { window.localStorage.setItem(COURSE_EXPANDED_KEY, JSON.stringify(next)); } catch { /* per-viewer convenience only */ }
+			return next;
+		});
+	}, []);
 
 	/* New session (owner, 2026-09-13): NO POST — the button opens the
 	   sessionless draft view; the session is created only when the first
@@ -431,6 +494,18 @@ function SessionsSidebar() {
 			.sort((a, b) => b.score - a.score)
 			.map((r) => r.c);
 	}, [chats, query, kindFilter]);
+
+	const searching = query.trim().length > 0;
+	const groups = useMemo(
+		() => (shown && workspaces ? groupChatsByCourse(shown, workspaces, expandedCourses, searching) : null),
+		[shown, workspaces, expandedCourses, searching],
+	);
+	/* The rows actually on screen, in render order — the keyboard walk's
+	   index space (course headers are not walked). */
+	const rows = useMemo(
+		() => (groups ? visibleRows(groups, archivedOpen, searching) : (shown ?? null)),
+		[groups, archivedOpen, searching, shown],
+	);
 
 	const refreshInFlightRef = useRef(false);
 	const refresh = useCallback(async () => {
@@ -635,7 +710,7 @@ function SessionsSidebar() {
 	// buttons, so the index matches).
 	useEffect(() => {
 		if (kbdIndex === null) return;
-		listRef.current?.querySelectorAll("button")[kbdIndex]?.scrollIntoView({ block: "nearest" });
+		listRef.current?.querySelectorAll("[data-session-row]")[kbdIndex]?.scrollIntoView({ block: "nearest" });
 	}, [kbdIndex]);
 
 	useEffect(() => {
@@ -644,6 +719,44 @@ function SessionsSidebar() {
 		// Opening + navigation refetch; while open, the events channel owns
 		// freshness (S6) — no interval, nothing standing.
 	}, [open, pathname, refresh]);
+
+	const renderRow = (c: ChatListItem) =>
+		renamingId === c.id ? (
+			<RenameRow
+				key={c.id}
+				chat={c}
+				onCommit={(next) => void commitRename(c.id, next)}
+				onCancel={() => setRenamingId(null)}
+			/>
+		) : (
+			<SessionRow
+				key={c.id}
+				chat={c}
+				active={pathname === `/chat/${c.id}`}
+				kbdSelected={kbdIndex !== null && rows?.[kbdIndex]?.id === c.id}
+				onOpen={() => {
+					setKbdIndex(null);
+					router.push(`/chat/${c.id}`);
+				}}
+				onContextMenu={(e) => openContext(e, c)}
+			/>
+		);
+
+	const renderGroup = (group: CourseGroup) => (
+		<div key={group.workspace.id} data-testid="course-group" className="mb-1">
+			<CourseHeader
+				group={group}
+				onToggle={() => toggleCourse(group.workspace.id, group.expanded)}
+				onNew={() => router.push(`/chat/new?workspace=${encodeURIComponent(group.workspace.id)}`)}
+			/>
+			{group.expanded &&
+				(group.chats.length > 0 ? (
+					group.chats.map(renderRow)
+				) : (
+					<div className="px-3 py-1.5 text-xs text-muted-foreground/70">No sessions yet.</div>
+				))}
+		</div>
+	);
 
 	return (
 		<aside
@@ -696,6 +809,10 @@ function SessionsSidebar() {
 				    half/half row): full-width rows read cleaner and give the
 				    labels room; teaching keeps the original draft route,
 				    practice carries its mode. */}
+				<div className="mx-3 mb-1">
+					<CourseSwitcher workspaces={workspaces} mutate={mutate} />
+				</div>
+
 				<div className="mx-3 mb-2 flex flex-col gap-1.5">
 					<button
 						type="button"
@@ -751,7 +868,7 @@ function SessionsSidebar() {
 								}
 								// Modified keys belong to the surface (⇧↵ etc.).
 								if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-								const n = shown?.length ?? 0;
+								const n = rows?.length ?? 0;
 								if (n === 0) return;
 								if (e.key === "ArrowDown" || e.key === "ArrowUp") {
 									// The rows move, not the caret.
@@ -763,7 +880,7 @@ function SessionsSidebar() {
 									return;
 								}
 								if (e.key === "Enter") {
-									const target = shown![kbdIndex !== null && kbdIndex < n ? kbdIndex : 0];
+									const target = rows![kbdIndex !== null && kbdIndex < n ? kbdIndex : 0];
 									if (!target) return;
 									e.preventDefault();
 									router.push(`/chat/${target.id}`);
@@ -809,33 +926,37 @@ function SessionsSidebar() {
 				<div ref={listRef} className="flex-1 overflow-y-auto p-2">
 					{shown === null ? (
 						<div className="px-2 py-4 text-xs text-muted-foreground">Loading…</div>
-					) : shown.length === 0 ? (
+					) : groups === null ? (
+						shown.length === 0 ? (
+							<div className="px-2 py-4 text-xs text-muted-foreground">
+								{query.trim() ? "No sessions match." : "No sessions yet."}
+							</div>
+						) : (
+							shown.map(renderRow)
+						)
+					) : groups.open.length === 0 && groups.archived.length === 0 ? (
 						<div className="px-2 py-4 text-xs text-muted-foreground">
-							{query.trim() ? "No sessions match." : "No sessions yet."}
+							{searching ? "No sessions match." : "No sessions yet."}
 						</div>
 					) : (
-						shown.map((c, i) =>
-							renamingId === c.id ? (
-								<RenameRow
-									key={c.id}
-									chat={c}
-									onCommit={(next) => void commitRename(c.id, next)}
-									onCancel={() => setRenamingId(null)}
-								/>
-							) : (
-								<SessionRow
-									key={c.id}
-									chat={c}
-									active={pathname === `/chat/${c.id}`}
-									kbdSelected={i === kbdIndex}
-									onOpen={() => {
-										setKbdIndex(null);
-										router.push(`/chat/${c.id}`);
-									}}
-									onContextMenu={(e) => openContext(e, c)}
-								/>
-							),
-						)
+						<>
+							{groups.open.map((group) => renderGroup(group))}
+							{groups.archived.length > 0 && (
+								<div data-testid="archived-courses" className="mt-2">
+									<button
+										type="button"
+										onClick={() => setArchivedOpen((v) => !v)}
+										aria-expanded={archivedOpen || searching}
+										className="flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-[11px] uppercase tracking-wider text-muted-foreground/70 transition-colors hover:text-foreground"
+									>
+										<ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", (archivedOpen || searching) && "rotate-90")} />
+										Archived
+										<span className="ml-auto normal-case tracking-normal">{groups.archived.length}</span>
+									</button>
+									{(archivedOpen || searching) && groups.archived.map((group) => renderGroup(group))}
+								</div>
+							)}
+						</>
 					)}
 				</div>
 
@@ -849,7 +970,19 @@ function SessionsSidebar() {
 					{/* Settings entry (settings-app wave): same row language as
 					    New session — quiet, bottom-pinned, opens the centered
 					    dialog (also mod+, in the keyboard registry). */}
-					<div className="px-3 pb-3 pt-1">
+					<div className="flex flex-col gap-0.5 px-3 pb-3 pt-1">
+						{/* "How I learn" (PLAN.md Phases 3–5): the learner model. */}
+						<Link
+							href="/learner"
+							data-testid="learner-entry"
+							className={cn(
+								"flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs uppercase tracking-wider text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+								pathname === "/learner" && "bg-accent text-foreground",
+							)}
+						>
+							<BrainIcon className="size-3" />
+							How I learn
+						</Link>
 						<Hint label="Settings" action="open-settings" side="right">
 							<button
 								type="button"

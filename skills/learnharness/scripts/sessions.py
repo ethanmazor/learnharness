@@ -435,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
     reader.add_argument("--include-operations", action="store_true")
     args = parser.parse_args(argv)
     try:
-        root = data_root(args.data_dir)
+        root = data_root(args.data_dir, args.workspace)
         if args.command == "list":
             value = list_sessions(root)
             if args.format == "json":

@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { LEDGER_FILES, POSITIONS_FILE } from "../../config.ts";
+import { workspacePaths } from "../../config.ts";
 import type { GraphSnapshot } from "../core/contracts.ts";
 import type { GraphCostSummary } from "../core/cost-summary.ts";
 import { graphCostSummary } from "../core/cost-summary.ts";
@@ -10,7 +10,7 @@ import {
 	type NodeDeletionStats,
 } from "../core/graph-deletion.ts";
 import { extractionStatuses } from "../agent/subagents/extraction.ts";
-import { stores } from "./stores.ts";
+import { stores, workspaceStores } from "./stores.ts";
 import { callCost } from "./pricing.ts";
 
 /**
@@ -19,7 +19,8 @@ import { callCost } from "./pricing.ts";
  * answers in sessions (turn-service), never from here — the home view
  * reflects whatever the pipeline has merged so far.
  */
-export function graphView(): GraphSnapshot {
+export function graphView(workspaceId: string): GraphSnapshot {
+	const stores = workspaceStores(workspaceId);
 	const organization = stores.sourceOrganizationStore.read();
 	const names = Object.fromEntries(Object.entries(organization.placements).flatMap(([id, p]) => p.name === undefined ? [] : [[id, p.name]]));
 	return graphSnapshot(stores, names);
@@ -31,7 +32,8 @@ export function graphView(): GraphSnapshot {
  *  (notes-front-door runs), and the naming ledger (graph-global runs);
  *  dollars are inferred by the pure core fold (core/cost-summary.ts +
  *  prices.ts) — nothing here stores or caches money. */
-export function graphCosts(): GraphCostSummary {
+export function graphCosts(workspaceId: string): GraphCostSummary {
+	const stores = workspaceStores(workspaceId);
 	const chats = stores.chatStore
 		.listChats()
 		.flatMap((summary) => {
@@ -55,14 +57,15 @@ export function graphCosts(): GraphCostSummary {
  *  carries it; the DELETE response returns it) to know clusters/layout
  *  must refetch — the "graph changed underneath me" signal. */
 export function graphRevision(): number {
+	// Every workspace's files (PLAN.md Phase 1): a write in any course moves
+	// the stamp; the active view refetching on another course's write is
+	// harmless, while missing its own write would leave the canvas stale.
 	let revision = 0;
-	for (const file of [
-		LEDGER_FILES.nodes,
-		LEDGER_FILES.chains,
-		LEDGER_FILES.sessions,
-		LEDGER_FILES.coverage,
-		POSITIONS_FILE,
-	]) {
+	const files = stores.workspaceStore.list().flatMap((workspace) => {
+		const paths = workspacePaths(workspace.id);
+		return [...Object.values(paths.ledgers), paths.positions];
+	});
+	for (const file of files) {
 		try {
 			revision = Math.max(revision, fs.statSync(file).mtimeMs);
 		} catch {
@@ -103,7 +106,8 @@ export type NodeDeleteOutcome =
  *     mergeFindings ignores linkTo ids that no longer exist (the
  *     existingIds guard) — no dangling edges, no resurrection.
  */
-export function deleteGraphNode(nodeId: string): NodeDeleteOutcome {
+export function deleteGraphNode(workspaceId: string, nodeId: string): NodeDeleteOutcome {
+	const stores = workspaceStores(workspaceId);
 	if (extractionStatuses().length > 0) {
 		return {
 			ok: false,

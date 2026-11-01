@@ -26,8 +26,13 @@ import type { TurnUsage } from "@/src/core";
 export function Home({
 	initialConfigured,
 	rendering = true,
+	workspaceId,
 }: {
 	initialConfigured: boolean;
+	/** The ACTIVE course this home shows (PLAN.md Phase 1): its graph, and
+	 *  the course a session started here lives in. The page keys Home on
+	 *  it, so switching course remounts every graph surface fresh. */
+	workspaceId?: string;
 	/** GRAPH RENDERING off (owner, 2026-10-06): the home's main view is
 	 * the chains view, not the canvas. Read server-side per navigation —
 	 * changing the setting applies on the next visit home. */
@@ -147,6 +152,7 @@ export function Home({
 				title: t,
 				...(mode === "practice" ? { kind: "practice" } : {}),
 				...(practiceProps.length > 0 ? { graphContext: { propositions: practiceProps } } : {}),
+				...(workspaceId ? { workspaceId } : {}),
 			}, fetch, JSON.stringify(catalog?.slots.strong));
 			router.push(target);
 		} catch {

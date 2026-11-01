@@ -259,7 +259,7 @@ def main(argv=None):
     chains.add_argument("--node", metavar="ID", type=nonempty)
     args = parser.parse_args(argv)
     try:
-        root = data_root(args.data_dir)
+        root = data_root(args.data_dir, args.workspace)
         graph = load_graph(root)
         metadata = load_metadata(root) if args.command == "sessions" or args.format == "markdown" else {}
         if args.command == "sessions":

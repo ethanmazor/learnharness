@@ -21,7 +21,7 @@
 import type { Position } from "../core/contracts.ts";
 import { deriveView, getGraph } from "../core/graph.ts";
 import { settleGraphLayout } from "../core/layout-settle.ts";
-import { stores } from "./stores.ts";
+import { workspaceStores } from "./stores.ts";
 
 /** Max |x| or |y| accepted — NaN/Infinity clamp here, absurd too. */
 const MAX_COORD = 1e6;
@@ -31,8 +31,9 @@ const MAX_COORD = 1e6;
  * sanitized positions actually persisted (empty object = nothing written,
  * e.g. a body with no known ids — the caller reports but never fails).
  */
-export function commitPositions(input: unknown): Record<string, Position> {
+export function commitPositions(workspaceId: string, input: unknown): Record<string, Position> {
 	if (typeof input !== "object" || input === null) return {};
+	const stores = workspaceStores(workspaceId);
 	const raw = input as Record<string, unknown>;
 
 	// Only ids the canvas's world actually has: stored propositions plus

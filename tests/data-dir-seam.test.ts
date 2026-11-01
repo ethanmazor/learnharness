@@ -25,8 +25,8 @@ describe("LH_DATA_DIR seam", () => {
 		try {
 			const { PATHS, ROOT } = await import("../config.ts");
 			assert.equal(PATHS.data, dir, "PATHS.data resolves the env value (resolved absolute)");
-			assert.equal(PATHS.chats, path.join(dir, "chats"));
-			assert.equal(PATHS.graph, path.join(dir, "graph"));
+			assert.equal(PATHS.chats, path.join(dir, "workspaces", "general", "chats"));
+			assert.equal(PATHS.graph, path.join(dir, "workspaces", "general", "graph"));
 			assert.equal(
 				PATHS.teacherPrompt,
 				path.join(ROOT, "src", "agent", "system-prompt.md"),
@@ -45,6 +45,6 @@ describe("LH_DATA_DIR seam", () => {
 		);
 		const parsed = JSON.parse(out) as { data: string; chats: string | null };
 		assert.equal(parsed.data, path.join(REPO_ROOT, "data"));
-		assert.equal(parsed.chats, path.join(REPO_ROOT, "data", "chats"));
+		assert.equal(parsed.chats, path.join(REPO_ROOT, "data", "workspaces", "general", "chats"));
 	});
 });

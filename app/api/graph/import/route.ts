@@ -17,7 +17,7 @@
  * healthy. The dock's chips + graph refetch track progress live through
  * /api/graph/status, as with session runs.
  */
-import { convertPdf, extraction, joinPages, NotesImportError, sourceDirectory } from "@/src/server";
+import { convertPdf, extractionFor, joinPages, NotesImportError, sourceDirectoryFor, workspaceErrorResponse, workspaceFromRequest } from "@/src/server";
 import { MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES, validNotesPath } from "@/lib/notes-import-limits.ts";
 import {
 	emit,
@@ -110,6 +110,12 @@ async function readImportForm(request: Request): Promise<FormData> {
 }
 
 export async function POST(request: Request) {
+	// The course this import lands in: `?workspace=` or the active course
+	// (PLAN.md Phase 1) — resolved before the body is read.
+	let workspaceId: string;
+	try { workspaceId = workspaceFromRequest(request); } catch (error) { return workspaceErrorResponse(error); }
+	const sourceDirectory = sourceDirectoryFor(workspaceId);
+	const extraction = extractionFor(workspaceId);
 	let form: FormData;
 	try {
 		form = await readImportForm(request);

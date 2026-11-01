@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { after, it } from "node:test";
 import { POST } from "../app/api/graph/import/route.ts";
-import { extraction } from "../src/server/index.ts";
+import { extractionFor } from "../src/server/index.ts";
 import { ModelsNotConfiguredError, ProviderKeyMissingError } from "../src/core/settings.ts";
 import { createExtractionPipeline, NotesImportError } from "../src/agent/subagents/extraction.ts";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { stores } from "../src/server/stores.ts";
+import { workspaceStores } from "../src/server/stores.ts";
+
+const extraction = extractionFor("general");
+const stores = workspaceStores("general");
 import type { GraphStore } from "../src/core/ports.ts";
 import type { GraphNode, GraphChain, NotesSource, SessionCheckpoint } from "../src/core/contracts.ts";
 import { tinyPdf } from "./helpers/tiny-pdf.ts";

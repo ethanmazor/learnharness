@@ -12,12 +12,16 @@
  * Every body is passed through sanitizeRenderSettings (src/core) before
  * touching disk: garbage clamps or falls back to defaults, never throws.
  */
-import { readRenderSettings, writeRenderSettings } from "@/src/server";
+import { readWorkspaceRenderSettings, workspaceErrorResponse, workspaceFromRequest, writeWorkspaceRenderSettings } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-	return Response.json(readRenderSettings());
+export async function GET(request: Request) {
+	try {
+		return Response.json(readWorkspaceRenderSettings(workspaceFromRequest(request)));
+	} catch (error) {
+		return workspaceErrorResponse(error);
+	}
 }
 
 export async function PUT(request: Request) {
@@ -27,5 +31,9 @@ export async function PUT(request: Request) {
 	} catch {
 		return Response.json({ error: "invalid JSON body" }, { status: 400 });
 	}
-	return Response.json(writeRenderSettings(body));
+	try {
+		return Response.json(writeWorkspaceRenderSettings(workspaceFromRequest(request), body));
+	} catch (error) {
+		return workspaceErrorResponse(error);
+	}
 }

@@ -1,6 +1,7 @@
 /**
  * JobStore — the fs JSON adapter: one file per background sub-agent job in
- * data/jobs/ (contracts.ts "THE ASYNC PROTOCOL"). Keyed by toolCallId for
+ * workspaces/<id>/jobs/ — the owning chat's workspace (PLAN.md Phase 1;
+ * the job routes by its chatId, lookups by id scan the workspaces) (contracts.ts "THE ASYNC PROTOCOL"). Keyed by toolCallId for
  * dedup: the chat-handler spawn hook never creates two jobs for the same
  * tool part. Implements core/ports.ts JobStore. Idioms: sync fs, id-guarded
  * filenames, JSON with tab indentation. Writes are small and rare (activity
@@ -10,18 +11,43 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { PATHS } from "../../config.ts";
+import { workspacePaths } from "../../config.ts";
+import { workspaceStore } from "./workspaces.ts";
 import { emit } from "../core/events.ts";
 import type { JobStore } from "../core/ports.ts";
 import type { CreateJobInit, JobPatch } from "../core/ports.ts";
 import type { JobRecord } from "../core/contracts.ts";
 
-/** Background jobs (data/jobs). Not in config.ts PATHS (orchestrator-owned). */
-const JOBS_DIR = path.join(PATHS.data, "jobs");
+/** A chat's jobs directories: its own workspace's, or — for a chat no
+ *  workspace holds (deleted, or never persisted) — every workspace's, so a
+ *  job record never becomes unreachable. The store has never required the
+ *  chat to exist; routing must not add that requirement. */
+function jobsDirsForChat(chatId: string): string[] {
+	const workspaceId = workspaceStore.workspaceOfChat(chatId);
+	if (workspaceId) return [workspacePaths(workspaceId).jobs];
+	return workspaceStore.list().map((w) => workspacePaths(w.id).jobs);
+}
 
-function jobFile(id: string): string {
+function checkJobId(id: string): void {
 	if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Invalid job id: ${id}`);
-	return path.join(JOBS_DIR, `${id}.json`);
+}
+
+/** Job ids are globally unique: the existing file in whichever workspace
+ *  holds it (cached), or null. */
+const jobLocations = new Map<string, string>();
+function existingJobFile(id: string): string | null {
+	checkJobId(id);
+	const cached = jobLocations.get(id);
+	if (cached && fs.existsSync(cached)) return cached;
+	jobLocations.delete(id);
+	for (const workspace of workspaceStore.list()) {
+		const file = path.join(workspacePaths(workspace.id).jobs, `${id}.json`);
+		if (fs.existsSync(file)) {
+			jobLocations.set(id, file);
+			return file;
+		}
+	}
+	return null;
 }
 
 /** Writes announce on the events channel AFTER the write lands (the
@@ -41,15 +67,26 @@ function createJob(init: CreateJobInit): JobRecord {
 		createdAt: now,
 		updatedAt: now,
 	};
-	fs.mkdirSync(JOBS_DIR, { recursive: true });
-	fs.writeFileSync(jobFile(record.id), JSON.stringify(record, null, "\t"), "utf-8");
+	// The chat's own workspace; an unknown chat's job lands in the active one.
+	const dir = workspacePaths(workspaceStore.workspaceOfChat(init.chatId) ?? workspaceStore.active()).jobs;
+	fs.mkdirSync(dir, { recursive: true });
+	checkJobId(record.id);
+	const file = path.join(dir, `${record.id}.json`);
+	fs.writeFileSync(file, JSON.stringify(record, null, "\t"), "utf-8");
+	jobLocations.set(record.id, file);
 	emit("jobs-changed", { chatId: init.chatId });
 	return record;
 }
 
 function getJob(id: string): JobRecord | null {
+	const file = existingJobFile(id);
+	if (!file) return null;
+	return readJobFile(file);
+}
+
+function readJobFile(file: string): JobRecord | null {
 	try {
-		return JSON.parse(fs.readFileSync(jobFile(id), "utf-8")) as JobRecord;
+		return JSON.parse(fs.readFileSync(file, "utf-8")) as JobRecord;
 	} catch {
 		return null;
 	}
@@ -62,7 +99,9 @@ function updateJob(id: string, patch: JobPatch): JobRecord | null {
 	const record = getJob(id);
 	if (!record) return null;
 	const next: JobRecord = { ...record, ...patch, updatedAt: patch.updatedAt ?? new Date().toISOString() };
-	fs.writeFileSync(jobFile(id), JSON.stringify(next, null, "\t"), "utf-8");
+	const file = existingJobFile(id);
+	if (!file) return null;
+	fs.writeFileSync(file, JSON.stringify(next, null, "\t"), "utf-8");
 	// EVERY write, not just status flips: progress-line updates must reach
 	// the dispatch cards (the view debounces the fetch bursts). A missing id
 	// wrote nothing and stays silent.
@@ -73,11 +112,9 @@ function updateJob(id: string, patch: JobPatch): JobRecord | null {
 /** All jobs for a chat, newest activity first. */
 function listJobs(chatId: string): JobRecord[] {
 	try {
-		fs.mkdirSync(JOBS_DIR, { recursive: true });
-		return fs
-			.readdirSync(JOBS_DIR)
-			.filter((f) => f.endsWith(".json"))
-			.map((f) => getJob(f.slice(0, -5)))
+		return jobsDirsForChat(chatId)
+			.filter((dir) => fs.existsSync(dir))
+			.flatMap((dir) => fs.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => readJobFile(path.join(dir, f))))
 			.filter((j): j is JobRecord => j !== null && j.chatId === chatId)
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 	} catch {
@@ -98,7 +135,10 @@ function deleteJobsForChat(chatId: string): number {
 	let removed = 0;
 	for (const job of listJobs(chatId)) {
 		try {
-			fs.unlinkSync(jobFile(job.id));
+			const file = existingJobFile(job.id);
+			if (!file) continue;
+			fs.unlinkSync(file);
+			jobLocations.delete(job.id);
 			removed++;
 		} catch {
 			/* already gone — the count is best-effort truth */
